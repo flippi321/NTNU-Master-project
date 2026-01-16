@@ -98,24 +98,3 @@ class DataAnalyser():
             plt.title('HUNT3 slice with HUNT3-HUNT4 differences highlighted')
         
         plt.show()
-
-    def analyse_pair_differences(self, hunt3_path, hunt4_path, hot=False):
-        """
-        Function to analyse and display differences between a Hunt3 and Hunt4 pair
-        """
-        hunt3 = self.load_from_path(hunt3_path)
-        hunt4 = self.load_from_path(hunt4_path)
-
-        # Get middle slices
-        h3_slice = hunt3[:, :, hunt3.shape[2] // 2]
-        h4_slice = hunt4[:, :, hunt4.shape[2] // 2]
-
-        # Display slices side by side
-        self.display_slices([h3_slice, h4_slice], ['HUNT3 Middle Slice', 'HUNT4 Middle Slice'])
-
-        # Display differences
-        self.display_slice_differences(h3_slice, h4_slice, hot=hot)
-
-        # Calculate and print SSIM
-        ssim_value = self.ssim(h3_slice, h4_slice)
-        print(f"Structural Similarity Index (SSIM) between HUNT3 and HUNT4 middle slices: {ssim_value}")
