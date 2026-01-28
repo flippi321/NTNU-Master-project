@@ -36,8 +36,8 @@ class DataConverter():
         return [torch.tensor(slice, dtype=torch.float32) for slice in data.transpose(2, 0, 1)]
 
     # ----- Convert between Numpy and Tensor -----
-    def numpy_to_tensor(self, array: np.ndarray):
-        tensor = torch.tensor(array, dtype=torch.float32).unsqueeze(0)  # TODO: Sjekk om vi kan fjerne unsqueeze
+    def numpy_to_tensor(self, array: np.ndarray, device = 'cuda'):
+        tensor = torch.tensor(array, dtype=torch.float32, device=device).unsqueeze(0)  # TODO: Sjekk om vi kan fjerne unsqueeze
         return tensor.float()
     
     def tensor_to_numpy(self, tensor: torch.Tensor):
