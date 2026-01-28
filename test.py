@@ -13,7 +13,8 @@ print("Loader, converter and analyser ready...")
 hunt_3_path, hunt_4_path = data_loader.get_random_pair_path()
 h3_num, h4_num = data_converter.load_path_as_numpy(hunt_3_path), data_converter.load_path_as_numpy(hunt_4_path)
 
-h3_tensor = data_converter.numpy_to_tensor(h3_num)
-h4_tensor = data_converter.numpy_to_tensor(h4_num)
+h3_tensor = data_converter.numpy_to_tensor(h3_num, 'cpu')
+h4_tensor = data_converter.numpy_to_tensor(h4_num, 'cpu')
 
-data_analyser.get_data_info(data_loader, data_converter)
+
+recc = data_analyser.get_data_info(data_loader, data_converter)
