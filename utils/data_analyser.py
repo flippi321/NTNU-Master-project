@@ -23,7 +23,7 @@ class DataAnalyser():
         ssim, _ = structural_similarity(hunt3, hunt4, data_range=1, channel_axis=None, full=True)
         return ssim
 
-    def get_data_info(self, data_loader, data_converter, max_entries: int = None, eps: float = 1e-6, label_w = 18):
+    def get_data_info(self, data_loader, data_converter, max_entries: int = None, eps: float = 1e-6, label_w: int = 18, max_layers: int = 5):
         """
         Function to print the number of entries, average value for entries and the dimensions of the dataset
         """
@@ -87,21 +87,24 @@ class DataAnalyser():
         print(f"{'Average intensity':>{label_w}} : {hunt3_mean:.5f}")
         print(f"{'Min shape':>{label_w}} : {min_h3_shape}")
         print(f"{'Max shape':>{label_w}} : {max_h3_shape}")
-        _, _, reccomended_dim_h3 = print_face_summary(min_h3_face, min_h3_shape, max_h3_face, face_names, label_w)
+        _, _, reccomended_dim_h3 = print_face_summary(min_h3_face, min_h3_shape, max_h3_face, face_names, label_w, max_layers)
 
         print(f"\n---------------  HUNT 4  ---------------")
         print(f"{'Number of entries':>{label_w}} : {hunt4_num}")
         print(f"{'Average intensity':>{label_w}} : {hunt4_mean:.5f}")
         print(f"{'Min shape':>{label_w}} : {min_h4_shape}")
         print(f"{'Max shape':>{label_w}} : {max_h4_shape}")
-        _, _, reccomended_dim_h4 = print_face_summary(min_h4_face, min_h4_shape, max_h4_face, face_names, label_w)
+        _, _, reccomended_dim_h4 = print_face_summary(min_h4_face, min_h4_shape, max_h4_face, face_names, label_w, max_layers)
 
         print(f"\n-----------------  DIV ------------------")
-        recommended_dim = [int(max(a, b)) for a, b in zip(reccomended_dim_h3, reccomended_dim_h4)]
-        print(f"{'Recommended dim':>{label_w}} : {recommended_dim}")
-
+        print("Reccomended data size per CNN layer depth:")
+        reccomended_dims = []
+        for i, (rec_h3, rec_h4) in enumerate(zip(reccomended_dim_h3, reccomended_dim_h4)):
+            rec = tuple(int(max(a, b)) for a, b in zip(rec_h3, rec_h4))
+            print(f"{i+1} layer: {rec}")
+            reccomended_dims.append((i+1, rec))
      
-        return hunt3_num, hunt4_num, hunt3_mean, hunt4_mean, min_h3_shape, max_h3_shape, min_h4_shape, max_h4_shape, min_h3_face, max_h3_face, min_h4_shape, max_h4_face, recommended_dim
+        return hunt3_num, hunt4_num, hunt3_mean, hunt4_mean, min_h3_shape, max_h3_shape, min_h4_shape, max_h4_shape, min_h3_face, max_h3_face, min_h4_shape, max_h4_face, reccomended_dims
     
     def display_slices(self, slices, slice_labels, slice_colors=None):
         """
@@ -183,7 +186,7 @@ def hunt_per_face_possible_crop(hunt_vol: np.ndarray, eps: float = 1e-6):
     size = maxs - mins
     return tuple(mins), tuple(maxs), tuple(size), tuple(crop_faces)
 
-def print_face_summary(min_face, min_shape, max_face, face_names, label_w):
+def print_face_summary(min_face, min_shape, max_face, face_names, label_w, max_layers):
     """
     Prints crop ranges + resulting size ranges.
     Returns:
@@ -210,7 +213,7 @@ def print_face_summary(min_face, min_shape, max_face, face_names, label_w):
     result_max = min_shape - crop_min
 
     # Recommended CNN size: next multiple of 8 >= smallest resulting size
-    recommended = next_divisible_by_8(result_min)
+    recommended = [next_divisible_by_n(result_min, 2**n) for n in range(1, max_layers)]
 
     start_fmt = [f"{start_min[i]}-{start_max[i]}" for i in range(3)]
     end_fmt   = [f"{end_min[i]}-{end_max[i]}"     for i in range(3)]
@@ -222,10 +225,10 @@ def print_face_summary(min_face, min_shape, max_face, face_names, label_w):
     print(f"{'Resulting size':>{label_w}} : [{', '.join(size_fmt)}]")
     return result_min, result_max, recommended
 
-def next_divisible_by_8(dims_xyz):
+def next_divisible_by_n(dims_xyz, n:int):
     """
     Returns the smallest dims (x,y,z) where each is divisible by 8 AND >= input.
     Works for list/tuple/np.array of length 3.
     """
     dims = np.array(dims_xyz, dtype=int)
-    return ((dims + 7) // 8) * 8
+    return ((dims + (n-1)) // n) * n
