@@ -3,6 +3,7 @@ import random
 import nibabel as nib
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity
+from tqdm import tqdm
 import numpy as np
 
 class DataAnalyser():
@@ -12,33 +13,36 @@ class DataAnalyser():
     Should work fine tho :P
     """
     
-    def __init__(self):
+    def __init__(self, root_path: str = '/cluster/projects/vc/data/mic/closed/MRI_HUNT/images/images_3D_preprocessed/'):
+        self.datasets = ['HUNT3', 'HUNT4']
+        self.root = root_path
+        self.all_candidates = os.listdir(os.path.join(self.root, self.datasets[0]))
         pass
 
     def ssim(self, hunt3, hunt4):
         ssim, _ = structural_similarity(hunt3, hunt4, data_range=1, channel_axis=None, full=True)
         return ssim
 
-    def get_data_info(self, max_entries:int=None):
+    def get_data_info(self, data_loader, data_converter, max_entries:int=None):
         """
         Function to print the number of entries, average value for entries and the dimensions of the dataset
         """
         # Get number of entries in each hunt dataset
-        hunt3_num = len(os.listdir(os.path.join(self.hunt_path, self.hunts[0])))
-        hunt4_num = len(os.listdir(os.path.join(self.hunt_path, self.hunts[1])))
-        print(f"Number of entries in {self.hunts[0]}: {hunt3_num}")
-        print(f"Number of entries in {self.hunts[1]}: {hunt4_num}")
+        hunt3_num = len(os.listdir(os.path.join(self.root, self.datasets[0])))
+        hunt4_num = len(os.listdir(os.path.join(self.root, self.datasets[1])))
+        print(f"Number of entries in {self.datasets[0]}: {hunt3_num}")
+        print(f"Number of entries in {self.datasets[1]}: {hunt4_num}")
 
         # For every candidate we get the MRI pair data
         means_h3 = []
         min_h3_shape = min_h4_shape = [np.inf, np.inf, np.inf]
         max_h3_shape = max_h4_shape = [0, 0, 0]
         means_h4 = []
-        for i, candidate in enumerate(os.listdir(os.path.join(self.hunt_path, self.hunts[0]))):
-            
-            # We load the data
-            hunt3 = self.load_from_path(self.get_pair_path_from_id(candidate)[0])
-            hunt4 = self.load_from_path(self.get_pair_path_from_id(candidate)[1])
+        for i, candidate in tqdm(enumerate(self.all_candidates), total=hunt3_num, desc="Analyzing candidates"):    
+            # We load the candidate pair
+            candidate_path_pairs = data_loader.get_pair_path_from_id(candidate)
+            hunt3 = data_converter.load_path_as_numpy(candidate_path_pairs[0])
+            hunt4 = data_converter.load_path_as_numpy(candidate_path_pairs[1])
 
             # Get average
             means_h3.append(np.mean(hunt3))
