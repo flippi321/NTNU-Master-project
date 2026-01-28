@@ -30,8 +30,6 @@ class DataAnalyser():
         # Get number of entries in each hunt dataset
         hunt3_num = len(os.listdir(os.path.join(self.root, self.datasets[0])))
         hunt4_num = len(os.listdir(os.path.join(self.root, self.datasets[1])))
-        print(f"Number of entries in {self.datasets[0]}: {hunt3_num}")
-        print(f"Number of entries in {self.datasets[1]}: {hunt4_num}")
 
         # For every candidate we get the MRI pair data
         means_h3, means_h4 = [], []
@@ -76,20 +74,28 @@ class DataAnalyser():
             min_h4_face = np.minimum(min_h4_face, faces4)
             max_h4_face = np.maximum(max_h4_face, faces4)
 
-        # Print Average intensity and shape info
+        # Calculate Average intensity and shape info
         hunt3_mean = np.mean(means_h3)
         hunt4_mean = np.mean(means_h4)
-        print(f"Average intensity across Hunt3: {hunt3_mean}")
-        print(f"Average intensity across Hunt4: {hunt4_mean}")
 
-        print(f"Min shape across Hunt3: {min_h3_shape}, Max shape across Hunt3: {max_h3_shape}")
-        print(f"Min shape across Hunt4: {min_h4_shape}, Max shape across Hunt4: {max_h4_shape}")
+        # Print Average intensity and shape info
+        print(f"\n---------------  HUNT 3  ---------------")
+        print(f"  Number of entries: {hunt3_num}")
+        print(f"  Average intensity: {hunt3_mean}")
+        print(f"  Min shape: {min_h3_shape}")
+        print(f"  Max shape: {max_h3_shape}")
+        _, _, reccomended_dim_h3 = print_face_summary(min_h3_face, min_h3_shape, max_h3_face, face_names)
 
-        _, _, reccomended_dim_h3 = print_face_summary("HUNT3", min_h3_face, min_h3_shape, max_h3_face, face_names)
-        _, _, reccomended_dim_h4 = print_face_summary("HUNT4", min_h4_face, min_h4_shape, max_h4_face, face_names)
+        print(f"\n---------------  HUNT 4  ---------------")
+        print(f"  Number of entries: {hunt4_num}")
+        print(f"  Average intensity: {hunt4_mean}")
+        print(f"  Min shape: {min_h4_shape}")
+        print(f"  Max shape: {max_h4_shape}")
+        _, _, reccomended_dim_h4 = print_face_summary(min_h4_face, min_h4_shape, max_h4_face, face_names)
 
+        print(f"\n-----------------  DIV ------------------")
         recommended_dim = [max(a, b) for a, b in zip(reccomended_dim_h3, reccomended_dim_h4)]
-        print(f"\n\nReccomended final dim: {recommended_dim}")
+        print(f"\n\nReccomended final dim: {recommended_dim.tolist()}")
         
         return hunt3_num, hunt4_num, hunt3_mean, hunt4_mean, min_h3_shape, max_h3_shape, min_h4_shape, max_h4_shape, min_h3_face, max_h3_face, min_h4_shape, max_h4_face, reccomended_dim
     
@@ -173,7 +179,7 @@ def hunt_per_face_possible_crop(hunt_vol: np.ndarray, eps: float = 1e-6):
     size = maxs - mins
     return tuple(mins), tuple(maxs), tuple(size), tuple(crop_faces)
 
-def print_face_summary(ds_name, min_face, min_shape, max_face, face_names):
+def print_face_summary(min_face, min_shape, max_face, face_names):
     """
     Prints crop ranges + resulting size ranges.
     Returns:
@@ -202,16 +208,14 @@ def print_face_summary(ds_name, min_face, min_shape, max_face, face_names):
     # Recommended CNN size: next multiple of 8 >= smallest resulting size
     recommended = next_divisible_by_8(result_min)
 
-    print(f"\n---------------  {ds_name} CROPS  ---------------")
-
     start_fmt = [f"{start_min[i]}-{start_max[i]}" for i in range(3)]
     end_fmt   = [f"{end_min[i]}-{end_max[i]}"     for i in range(3)]
-    print(f"  Start crops (x,y,z): [{', '.join(start_fmt)}]")
-    print(f"  End   crops (x,y,z): [{', '.join(end_fmt)}]")
+    print(f"   Start crops: [{', '.join(start_fmt)}]")
+    print(f"     End crops: [{', '.join(end_fmt)}]")
 
     # Show resulting size range as [min-max] per axis
     size_fmt = [f"{result_min[i]}-{result_max[i]}" for i in range(3)]
-    print(f"  Resulting size after crop (x,y,z): [{', '.join(size_fmt)}]")
+    print(f"Resulting size: [{', '.join(size_fmt)}]")
     return result_min, result_max, recommended
 
 def next_divisible_by_8(dims_xyz):
