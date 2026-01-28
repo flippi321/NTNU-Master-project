@@ -17,4 +17,4 @@ h3_tensor = data_converter.numpy_to_tensor(h3_num, 'cpu')
 h4_tensor = data_converter.numpy_to_tensor(h4_num, 'cpu')
 
 
-recc = data_analyser.get_data_info(data_loader, data_converter)
+data = data_analyser.get_data_info(data_loader, data_converter)
