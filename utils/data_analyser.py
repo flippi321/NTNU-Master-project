@@ -230,8 +230,8 @@ def next_divisible_by_n(dims_xyz, n:int):
 
 def get_recommended_volume_size_by_layer(
     hunt_size,      # (193, 229, 193)
-    min_face, # (x_str, x_end, y_str, y_end, z_str, z_end) 
-    num_layers,
+    min_face,       # (x_str, x_end, y_str, y_end, z_str, z_end) 
+    num_layers,     # How many CNN layers in our model (need a number divisible by 2^n)
 ):
     """
     A function to get a reccomended size for the data depending on the layers
@@ -288,7 +288,7 @@ def recommended_safe_symmetric_crop(
         s = min(s_ideal, s_cap)
         e = d - s
 
-        # If end exceeds cap, push some crop back to start (still within caps)
+        # If cap is exceeded, push a bit back
         if e > e_cap:
             excess = e - e_cap
             s += excess
