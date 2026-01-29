@@ -30,12 +30,14 @@ class DataLoader():
         all_pairs = [self.get_pair_path_from_id(candidate) for candidate in self.all_candidates]
         return all_pairs
     
-    def split_dataset_paths(self, train_split:float = 0.70, val_split:float = 0.15, seed:int = random.randint(0, 10000)):
+    def split_dataset_paths(self, train_split:float = 0.70, val_split:float = 0.15, seed:int = None):
         """
         Function to split the dataset into training and testing paths
         """
 
         # We first shuffle all entries
+        if seed is None:
+            seed = random.randint(0, 10000)
         random.seed(seed)
         random.shuffle(self.all_candidates)
 
