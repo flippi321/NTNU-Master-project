@@ -1,6 +1,7 @@
 from utils.data_loader import DataLoader
 from utils.data_converter import DataConverter
 from utils.data_analyser import DataAnalyser
+import os
 
 print("Starting...")
 
@@ -17,4 +18,19 @@ h3_tensor = data_converter.numpy_to_tensor(h3_num, 'cpu')
 h4_tensor = data_converter.numpy_to_tensor(h4_num, 'cpu')
 
 
-data = data_analyser.get_data_info(data_loader, data_converter)
+data = data_analyser.get_data_info(data_loader, data_converter, max_layers=10)
+
+try:
+    file_path = "file-size-reccomendations.txt"
+    # Remove old recommendations
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+    # Add recommendations
+    with open(file_path, "w") as file_object:
+        for rec in data[-1]:
+            text = f"layer {rec[0]}:   {rec[1]}\n"
+            file_object.write(text)
+    print(f"Done!")
+except IOError as e:
+    print(f"Could not write to file :/")
