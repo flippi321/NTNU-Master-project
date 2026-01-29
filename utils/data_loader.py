@@ -6,7 +6,6 @@ class DataLoader():
         self.datasets = ['HUNT3', 'HUNT4']  # This won't change, so hardcoded it
         self.root = root_path
         self.all_candidates = os.listdir(os.path.join(self.root, self.datasets[0]))
-        pass
 
     def get_pair_path_from_id(self, candidate:str):
         """
