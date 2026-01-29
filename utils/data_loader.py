@@ -37,18 +37,19 @@ class DataLoader():
 
         # We first shuffle all entries
         if seed is None:
-            seed = random.randint(0, 10000)
+        # We first shuffle all entries (using a copy to avoid mutating self.all_candidates)
         random.seed(seed)
-        random.shuffle(self.all_candidates)
+        candidates = self.all_candidates.copy()
+        random.shuffle(candidates)
 
         # Get split index/points
-        train_split_index = int(len(self.all_candidates) * train_split)
-        val_split_index = int(len(self.all_candidates) * (train_split + val_split))
+        train_split_index = int(len(candidates) * train_split)
+        val_split_index = int(len(candidates) * (train_split + val_split))
         
         # Split into train, test and eval
-        train_entries = self.all_candidates[:train_split_index]
-        val_entries = self.all_candidates[train_split_index:val_split_index]
-        test_entries = self.all_candidates[val_split_index:]    # Test split is (1 - train - val)
+        train_entries = candidates[:train_split_index]
+        val_entries = candidates[train_split_index:val_split_index]
+        test_entries = candidates[val_split_index:]    # Test split is (1 - train - val)
 
         train_paths = [self.get_pair_path_from_id(candidate) for candidate in train_entries]
         val_paths = [self.get_pair_path_from_id(candidate) for candidate in val_entries]
