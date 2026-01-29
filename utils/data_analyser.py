@@ -87,7 +87,7 @@ class DataAnalyser():
         print(f"{'Average intensity':>{label_w}} : {hunt3_mean:.5f}")
         print(f"{'Min shape':>{label_w}} : {min_h3_shape}")
         print(f"{'Max shape':>{label_w}} : {max_h3_shape}")
-        _, _, reccomended_dim_h3 = print_face_summary(min_h3_face, min_h3_shape, max_h3_face, face_names, label_w, max_layers)
+        reccomended_dim_h3 = print_face_summary(min_h3_face, min_h3_shape, max_h3_face, face_names, label_w, max_layers)
 
         print(f"\n---------------  HUNT 4  ---------------")
         print(f"{'Number of entries':>{label_w}} : {hunt4_num}")
@@ -223,7 +223,7 @@ def print_face_summary(min_face, min_shape, max_face, face_names, label_w, max_l
     # Show resulting size range as [min-max] per axis
     size_fmt = [f"{result_min[i]}-{result_max[i]}" for i in range(3)]
     print(f"{'Resulting size':>{label_w}} : [{', '.join(size_fmt)}]")
-    return result_min, result_max, recommended
+    return recommended
 
 def next_divisible_by_n(dims_xyz, n:int):
     """
