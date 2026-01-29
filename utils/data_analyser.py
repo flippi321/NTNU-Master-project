@@ -36,9 +36,6 @@ class DataAnalyser():
         min_h3_shape = min_h4_shape = [np.inf, np.inf, np.inf]
         max_h3_shape = max_h4_shape = [0, 0, 0]
 
-        # NEW: per-face crop stats (x_str, x_end, y_str, y_end, z_str, z_end)
-        face_names = ["x_str", "x_end", "y_str", "y_end", "z_str", "z_end"]
-
         min_h3_face = np.array([np.inf]*6, dtype=float)
         max_h3_face = np.array([0]*6, dtype=int)
         min_h4_face = np.array([np.inf]*6, dtype=float)
@@ -60,19 +57,14 @@ class DataAnalyser():
             max_h4_shape = [max(max_h4_shape[0], hunt4.shape[0]), max(max_h4_shape[1], hunt4.shape[1]), max(max_h4_shape[2], hunt4.shape[2])]
 
             # HUNT3 per-face crop
-            mins3, maxs3, size3, faces3 = hunt_per_face_possible_crop(hunt3, eps=eps)
-            
-            # The axis changes for the HUNT 3 volume
-            faces3 = np.array(faces3, dtype=int)
-            min_h3_face = np.minimum(min_h3_face, faces3)
-            max_h3_face = np.maximum(max_h3_face, faces3)
+            min_cropped_face_h3 = hunt_per_face_possible_crop(hunt3, eps=eps)
+            min_h3_face = np.minimum(min_h3_face, min_cropped_face_h3)
+            max_h3_face = np.maximum(max_h3_face, min_cropped_face_h3)
 
-
-            # The axis changes for HUNT 4 volume
-            mins4, maxs4, size4, faces4 = hunt_per_face_possible_crop(hunt4, eps=eps)
-            faces4 = np.array(faces4, dtype=int)
-            min_h4_face = np.minimum(min_h4_face, faces4)
-            max_h4_face = np.maximum(max_h4_face, faces4)
+            # HUNT4 per-face crop
+            min_cropped_face_h4 = hunt_per_face_possible_crop(hunt4, eps=eps)
+            min_h4_face = np.minimum(min_h4_face, min_cropped_face_h4)
+            max_h4_face = np.maximum(max_h4_face, min_cropped_face_h4)
 
             if (max_entries and i > max_entries):
                 break
@@ -87,14 +79,14 @@ class DataAnalyser():
         print(f"{'Average intensity':>{label_w}} : {hunt3_mean:.5f}")
         print(f"{'Min shape':>{label_w}} : {min_h3_shape}")
         print(f"{'Max shape':>{label_w}} : {max_h3_shape}")
-        print_face_summary(min_h3_face, min_h3_shape, max_h3_face, face_names, label_w, max_layers)
+        print_face_summary(min_h3_face, min_h3_shape, max_h3_face, label_w)
 
         print(f"\n---------------  HUNT 4  ---------------")
         print(f"{'Number of entries':>{label_w}} : {hunt4_num}")
         print(f"{'Average intensity':>{label_w}} : {hunt4_mean:.5f}")
         print(f"{'Min shape':>{label_w}} : {min_h4_shape}")
         print(f"{'Max shape':>{label_w}} : {max_h4_shape}")
-        print_face_summary(min_h4_face, min_h4_shape, max_h4_face, face_names, label_w, max_layers)
+        print_face_summary(min_h4_face, min_h4_shape, max_h4_face, label_w)
 
 
         print(f"\n-----------------  DIV ------------------")
@@ -158,10 +150,7 @@ def hunt_per_face_possible_crop(hunt_vol: np.ndarray, eps: float = 1e-6):
       crop_faces: (x_str, x_end, y_str, y_end, z_str, z_end)
     """
     mask = hunt_vol > eps
-
-    shape = np.array(hunt_vol.shape, dtype=int)
-    mins = np.zeros(3, dtype=int)
-    maxs = shape.copy()
+    shape = hunt_vol.shape
 
     # crop faces in order: x_str, x_end, y_str, y_end, z_str, z_end
     crop_faces = np.zeros(6, dtype=int)
@@ -178,17 +167,12 @@ def hunt_per_face_possible_crop(hunt_vol: np.ndarray, eps: float = 1e-6):
 
         start_crop = first
         end_crop = (shape[axis] - 1) - last
-
-        mins[axis] = start_crop
-        maxs[axis] = shape[axis] - end_crop
-
         crop_faces[2*axis + 0] = start_crop
         crop_faces[2*axis + 1] = end_crop
 
-    size = maxs - mins
-    return tuple(mins), tuple(maxs), tuple(size), tuple(crop_faces)
+    return tuple(crop_faces)
 
-def print_face_summary(min_face, min_shape, max_face, face_names, label_w, max_layers):
+def print_face_summary(min_face: int, min_shape: np.array, max_face: int, label_w: int):
     """
     Prints crop ranges + resulting size ranges.
     Returns:
@@ -220,25 +204,18 @@ def print_face_summary(min_face, min_shape, max_face, face_names, label_w, max_l
     print(f"{'Resulting size':>{label_w}} : [{', '.join(size_fmt)}]")
     return
 
-def next_divisible_by_n(dims_xyz, n:int):
+def next_divisible_by_n(dims:np.array, n:int):
     """
     Returns the smallest dims (x,y,z) where each is divisible by 8 AND >= input.
     Works for list/tuple/np.array of length 3.
     """
-    dims = np.array(dims_xyz, dtype=int)
     return ((dims + (n-1)) // n) * n
 
-def get_recommended_volume_size_by_layer(
-    hunt_size,      # (193, 229, 193)
-    min_face,       # (x_str, x_end, y_str, y_end, z_str, z_end) 
-    num_layers,     # How many CNN layers in our model (need a number divisible by 2^n)
-):
+def get_recommended_volume_size_by_layer(hunt_size: np.array, min_face: np.array, num_layers: int):
     """
-    A function to get a reccomended size for the data depending on the layers
+    A function to get a recommended size for the data depending on the layers
     Will never go over the possible caps
     """
-    min_face = min_face.astype(int)
-    hunt_size = np.array(hunt_size, dtype=int)
 
     # Split faces into start/end per axis
     smallest_start = np.array([min_face[0], min_face[2], min_face[4]])
@@ -249,36 +226,29 @@ def get_recommended_volume_size_by_layer(
 
     return next_divisible_by_n(result_min, 2**num_layers)
 
-def recommended_safe_symmetric_crop(
-    hunt_size,          # (193, 229, 193)
-    safe_face_caps,     # (x_str, x_end, y_str, y_end, z_str, z_end) 
-    rec_dim             # The reccomended, feasable, dimention
-):
+def recommended_safe_symmetric_crop(hunt_shape: np.array, caps: np.array, rec_dim: np.array):
     """
     A function that finds a recipie to crop all HUNT volumes by.
     It will try to be as symetrical as possible
 
     Will return the start and end crops
     """
-    hunt_shape = np.array(hunt_size, dtype=int)
-    caps       = np.array(safe_face_caps, dtype=int)
 
     # per-axis caps
-    s_caps = np.array([caps[0], caps[2], caps[4]], dtype=int)
-    e_caps = np.array([caps[1], caps[3], caps[5]], dtype=int)
+    s_caps = [caps[0], caps[2], caps[4]]
+    e_caps = [caps[1], caps[3], caps[5]]
 
     diff = hunt_shape - rec_dim
 
-    start = np.zeros(3, dtype=int)
-    end   = np.zeros(3, dtype=int)
+    start = np.zeros(3)
+    end   = np.zeros(3)
 
+    # Go sequencially trough x, y and z
     for ax in range(3):
-        d = int(diff[ax])
-        if d == 0:
-            continue
+        d = diff[ax]
 
-        s_cap = int(s_caps[ax])
-        e_cap = int(e_caps[ax])
+        s_cap = s_caps[ax]
+        e_cap = e_caps[ax]
 
         # Find the ideal slip for start and end
         s_ideal = d // 2
