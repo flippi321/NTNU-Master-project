@@ -240,8 +240,9 @@ def recommended_safe_symmetric_crop(hunt_shape: np.array, caps: np.array, rec_di
 
     diff = hunt_shape - rec_dim
 
-    start = np.zeros(3)
-    end   = np.zeros(3)
+    start = np.zeros(3, dtype=int)
+    end   = np.zeros(3, dtype=int)
+
 
     # Go sequencially trough x, y and z
     for ax in range(3):
