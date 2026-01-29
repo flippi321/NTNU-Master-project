@@ -18,7 +18,7 @@ h3_tensor = data_converter.numpy_to_tensor(h3_num, 'cpu')
 h4_tensor = data_converter.numpy_to_tensor(h4_num, 'cpu')
 
 
-data = data_analyser.get_data_info(data_loader, data_converter, max_layers=10)
+data = data_analyser.get_data_info(data_loader, data_converter, max_layers=8)
 
 try:
     file_path = "file-size-reccomendations.txt"
@@ -28,8 +28,8 @@ try:
 
     # Add recommendations
     with open(file_path, "w") as file_object:
-        for rec in data[-1]:
-            text = f"layer {rec[0]}:   {rec[1]}\n"
+        for i, (crops, rec) in enumerate(zip(data[-1], data[-2])):
+            text = f"{i+1} layers:   {rec}      |   Crops required:    {crops}\n"
             file_object.write(text)
     print(f"Done!")
 except IOError as e:

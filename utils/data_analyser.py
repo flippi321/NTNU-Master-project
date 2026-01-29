@@ -1,10 +1,10 @@
 import os
 import random
+import numpy as np
 import nibabel as nib
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity
 from tqdm import tqdm
-import numpy as np
 
 class DataAnalyser():
     """
@@ -87,24 +87,26 @@ class DataAnalyser():
         print(f"{'Average intensity':>{label_w}} : {hunt3_mean:.5f}")
         print(f"{'Min shape':>{label_w}} : {min_h3_shape}")
         print(f"{'Max shape':>{label_w}} : {max_h3_shape}")
-        reccomended_dim_h3 = print_face_summary(min_h3_face, min_h3_shape, max_h3_face, face_names, label_w, max_layers)
+        print_face_summary(min_h3_face, min_h3_shape, max_h3_face, face_names, label_w, max_layers)
 
         print(f"\n---------------  HUNT 4  ---------------")
         print(f"{'Number of entries':>{label_w}} : {hunt4_num}")
         print(f"{'Average intensity':>{label_w}} : {hunt4_mean:.5f}")
         print(f"{'Min shape':>{label_w}} : {min_h4_shape}")
         print(f"{'Max shape':>{label_w}} : {max_h4_shape}")
-        _, _, reccomended_dim_h4 = print_face_summary(min_h4_face, min_h4_shape, max_h4_face, face_names, label_w, max_layers)
+        print_face_summary(min_h4_face, min_h4_shape, max_h4_face, face_names, label_w, max_layers)
+
 
         print(f"\n-----------------  DIV ------------------")
         print("Reccomended data size per CNN layer depth:")
-        reccomended_dims = []
-        for i, (rec_h3, rec_h4) in enumerate(zip(reccomended_dim_h3, reccomended_dim_h4)):
-            rec = tuple(int(max(a, b)) for a, b in zip(rec_h3, rec_h4))
-            print(f"{i+1} layer: {rec}")
-            reccomended_dims.append((i+1, rec))
-     
-        return hunt3_num, hunt4_num, hunt3_mean, hunt4_mean, min_h3_shape, max_h3_shape, min_h4_shape, max_h4_shape, min_h3_face, max_h3_face, min_h4_shape, max_h4_face, reccomended_dims
+        
+        hunt_size       = np.minimum(min_h3_shape, min_h4_shape)  
+        hunt_min_caps   = np.minimum(min_h3_face.astype(int), min_h4_face.astype(int))
+        
+        rec_dim_per_layer = [get_recommended_volume_size_by_layer(hunt_size, hunt_min_caps, n) for n in range(1, max_layers+1)]
+        reccomended_crops = [recommended_safe_symmetric_crop(hunt_size, hunt_min_caps, rec_dim) for rec_dim in rec_dim_per_layer]
+        
+        return hunt3_num, hunt4_num, hunt3_mean, hunt4_mean, min_h3_shape, min_h4_shape, rec_dim_per_layer, reccomended_crops
     
     def display_slices(self, slices, slice_labels, slice_colors=None):
         """
@@ -203,17 +205,10 @@ def print_face_summary(min_face, min_shape, max_face, face_names, label_w, max_l
     start_max = np.array([max_face[0], max_face[2], max_face[4]])
     end_min   = np.array([min_face[1], min_face[3], min_face[5]])
     end_max   = np.array([max_face[1], max_face[3], max_face[5]])
-
-    # Crop ranges (per axis)
-    crop_min = start_min + end_min  # smallest crop
-    crop_max = start_max + end_max  # largest crop
-
+    
     # Resulting size ranges:
-    result_min = min_shape - crop_max
-    result_max = min_shape - crop_min
-
-    # Recommended CNN size: Take the smallest possible size and find the closest (larger) number divisible by 2^n
-    recommended = [next_divisible_by_n(result_max, 2**n) for n in range(1, max_layers)]
+    result_min = min_shape - (start_min + end_min)
+    result_max = min_shape - (start_max + end_max)
 
     start_fmt = [f"{start_min[i]}-{start_max[i]}" for i in range(3)]
     end_fmt   = [f"{end_min[i]}-{end_max[i]}"     for i in range(3)]
@@ -221,9 +216,9 @@ def print_face_summary(min_face, min_shape, max_face, face_names, label_w, max_l
     print(f"{'End crops':>{label_w}} : [{', '.join(end_fmt)}]")
 
     # Show resulting size range as [min-max] per axis
-    size_fmt = [f"{result_min[i]}-{result_max[i]}" for i in range(3)]
+    size_fmt = [f"{result_max[i]}-{result_min[i]}" for i in range(3)]
     print(f"{'Resulting size':>{label_w}} : [{', '.join(size_fmt)}]")
-    return recommended
+    return
 
 def next_divisible_by_n(dims_xyz, n:int):
     """
@@ -232,3 +227,78 @@ def next_divisible_by_n(dims_xyz, n:int):
     """
     dims = np.array(dims_xyz, dtype=int)
     return ((dims + (n-1)) // n) * n
+
+def get_recommended_volume_size_by_layer(
+    hunt_size,      # (193, 229, 193)
+    min_face, # (x_str, x_end, y_str, y_end, z_str, z_end) 
+    num_layers,
+):
+    """
+    A function to get a reccomended size for the data depending on the layers
+    Will never go over the possible caps
+    """
+    min_face = min_face.astype(int)
+    hunt_size = np.array(hunt_size, dtype=int)
+
+    # Split faces into start/end per axis
+    smallest_start = np.array([min_face[0], min_face[2], min_face[4]])
+    smallest_end   = np.array([min_face[1], min_face[3], min_face[5]])
+    
+    # Resulting size ranges:
+    result_min = hunt_size - (smallest_start + smallest_end)
+
+    return next_divisible_by_n(result_min, 2**num_layers)
+
+def recommended_safe_symmetric_crop(
+    hunt_size,          # (193, 229, 193)
+    safe_face_caps,     # (x_str, x_end, y_str, y_end, z_str, z_end) 
+    rec_dim             # The reccomended, feasable, dimention
+):
+    """
+    A function that finds a recipie to crop all HUNT volumes by.
+    It will try to be as symetrical as possible
+
+    Will return the start and end crops
+    """
+    hunt_shape = np.array(hunt_size, dtype=int)
+    caps       = np.array(safe_face_caps, dtype=int)
+
+    # per-axis caps
+    s_caps = np.array([caps[0], caps[2], caps[4]], dtype=int)
+    e_caps = np.array([caps[1], caps[3], caps[5]], dtype=int)
+
+    diff = hunt_shape - rec_dim
+
+    start = np.zeros(3, dtype=int)
+    end   = np.zeros(3, dtype=int)
+
+    for ax in range(3):
+        d = int(diff[ax])
+        if d == 0:
+            continue
+
+        s_cap = int(s_caps[ax])
+        e_cap = int(e_caps[ax])
+
+        # Find the ideal slip for start and end
+        s_ideal = d // 2
+        e_ideal = d - s_ideal
+
+        # Clamp to caps
+        s = min(s_ideal, s_cap)
+        e = d - s
+
+        # If end exceeds cap, push some crop back to start (still within caps)
+        if e > e_cap:
+            excess = e - e_cap
+            s += excess
+            e -= excess
+
+        # Final sanity
+        if s > s_cap or e > e_cap or s + e != d:
+            raise RuntimeError(f"The cropping algorithm is burning :/ \n{s} should be <= {s_cap}, {e} should be <= {e_cap}, and {s}+{e}={d}")
+
+        start[ax] = s
+        end[ax]   = e
+
+    return tuple(start.tolist()), tuple(end.tolist())
