@@ -7,7 +7,7 @@ class DataLoader():
         self.root = root_path
         self.all_candidates = os.listdir(os.path.join(self.root, self.datasets[0]))
 
-    def get_pair_path_from_id(self, candidate:str):
+    def get_pair_path_from_id(self, candidate: str):
         """
         Returns the Hunt3 and Hunt4 paths for a given candidate id
         """
@@ -30,7 +30,7 @@ class DataLoader():
         all_pairs = [self.get_pair_path_from_id(candidate) for candidate in self.all_candidates]
         return all_pairs
     
-    def split_dataset_paths(self, train_split:float = 0.70, val_split:float = 0.15, seed:int = None):
+    def split_dataset_paths(self, train_split: float = 0.70, val_split: float = 0.15, seed: int = None):
         """
         Function to split the dataset into training and testing paths
         """
