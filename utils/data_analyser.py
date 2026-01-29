@@ -212,8 +212,8 @@ def print_face_summary(min_face, min_shape, max_face, face_names, label_w, max_l
     result_min = min_shape - crop_max
     result_max = min_shape - crop_min
 
-    # Recommended CNN size: next multiple of 8 >= smallest resulting size
-    recommended = [next_divisible_by_n(result_min, 2**n) for n in range(1, max_layers)]
+    # Recommended CNN size: Take the smallest possible size and find the closest (larger) number divisible by 2^n
+    recommended = [next_divisible_by_n(result_max, 2**n) for n in range(1, max_layers)]
 
     start_fmt = [f"{start_min[i]}-{start_max[i]}" for i in range(3)]
     end_fmt   = [f"{end_min[i]}-{end_max[i]}"     for i in range(3)]
