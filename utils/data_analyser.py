@@ -90,15 +90,15 @@ class DataAnalyser():
 
 
         print(f"\n-----------------  DIV ------------------")
-        print("Reccomended data size per CNN layer depth:")
+        print("Recommended data size per CNN layer depth:")
         
         hunt_size       = np.minimum(min_h3_shape, min_h4_shape)  
         hunt_min_caps   = np.minimum(min_h3_face.astype(int), min_h4_face.astype(int))
         
         rec_dim_per_layer = [get_recommended_volume_size_by_layer(hunt_size, hunt_min_caps, n) for n in range(1, max_layers+1)]
-        reccomended_crops = [recommended_safe_symmetric_crop(hunt_size, hunt_min_caps, rec_dim) for rec_dim in rec_dim_per_layer]
+        recommended_crops = [recommended_safe_symmetric_crop(hunt_size, hunt_min_caps, rec_dim) for rec_dim in rec_dim_per_layer]
         
-        return hunt3_num, hunt4_num, hunt3_mean, hunt4_mean, min_h3_shape, min_h4_shape, rec_dim_per_layer, reccomended_crops
+        return hunt3_num, hunt4_num, hunt3_mean, hunt4_mean, min_h3_shape, max_h3_shape, min_h4_shape, max_h4_shape, rec_dim_per_layer, recommended_crops
     
     def display_slices(self, slices, slice_labels, slice_colors=None):
         """
