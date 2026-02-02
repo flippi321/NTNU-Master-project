@@ -27,7 +27,7 @@ def cap_logged_loss(loss: torch.Tensor, loss_cap: float = 1e6) -> float:
 # TODO Evt finne en annen løsning her
 def mid_axial_slice_5d(t5):
     """
-    t5: (B, C, D, H, W) torch tensor
+    t5: (1, 1, D, H, W) torch tensor
     -> numpy slice (H, W) in [0,1] from the middle of D
     """
     if isinstance(t5, torch.Tensor):
