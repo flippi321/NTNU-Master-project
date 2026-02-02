@@ -116,9 +116,6 @@ def fit_3D(
         # --- log ---
         loss_history.append(loss_val)
 
-        if print_every and (i % print_every == 0):
-            print(f"[Iter {i}] total: {loss_val:.6f}")
-
         # --- snapshot ---
         if save_every and (i % save_every == 0 or i == epochs - 1):
             with torch.no_grad():
