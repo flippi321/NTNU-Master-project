@@ -25,15 +25,15 @@ def cap_logged_loss(loss: torch.Tensor, loss_cap: float = 1e6) -> float:
     return float(capped.item())
 
 # TODO Evt finne en annen løsning her
-def mid_axial_slice_5d(t5):
+def mid_axial_slice_5d(volume: torch.Tensor | np.ndarray):
     """
-    t5: (1, 1, D, H, W) torch tensor
+    volume: (1, 1, D, H, W)
     -> numpy slice (H, W) in [0,1] from the middle of D
     """
-    if isinstance(t5, torch.Tensor):
-        t = t5.detach().cpu()
+    if isinstance(volume, torch.Tensor):
+        t = volume.detach().cpu()
     else:
-        t = torch.tensor(t5)
+        t = torch.tensor(volume)
     _, _, D, H, W = t.shape
     mid = D // 2
     sl = t[0, 0, mid]  # (H, W)
