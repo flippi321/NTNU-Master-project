@@ -172,13 +172,9 @@ def hunt_per_face_possible_crop(hunt_vol: np.ndarray, eps: float = 1e-6):
 
     return tuple(crop_faces)
 
-def print_face_summary(min_face: int, min_shape: np.array, max_face: int, label_w: int):
+def print_face_summary(min_face: np.ndarray, min_shape: np.ndarray, max_face: np.ndarray, label_w: int):
     """
-    Prints crop ranges + resulting size ranges.
-    Returns:
-      result_min_xyz: smallest possible resulting size after cropping (x,y,z)
-      result_max_xyz: largest  possible resulting size after cropping (x,y,z)
-      recommended_xyz: next divisible-by-8 size >= result_min_xyz
+    Prints a summary of the cropping faces and resulting sizes
     """
     min_face = min_face.astype(int)
     max_face = max_face.astype(int)
@@ -206,7 +202,7 @@ def print_face_summary(min_face: int, min_shape: np.array, max_face: int, label_
 
 def next_divisible_by_n(dims:np.array, n:int):
     """
-    Returns the smallest dims (x,y,z) where each is divisible by 8 AND >= input.
+    Returns the smallest dims (x,y,z) where each is divisible by n AND >= input.
     Works for list/tuple/np.array of length 3.
     """
     return ((dims + (n-1)) // n) * n
@@ -228,8 +224,8 @@ def get_recommended_volume_size_by_layer(hunt_size: np.array, min_face: np.array
 
 def recommended_safe_symmetric_crop(hunt_shape: np.array, caps: np.array, rec_dim: np.array):
     """
-    A function that finds a recipie to crop all HUNT volumes by.
-    It will try to be as symetrical as possible
+    A function that finds a recipe to crop all HUNT volumes by.
+    It will try to be as symmetrical as possible
 
     Will return the start and end crops
     """
@@ -244,16 +240,15 @@ def recommended_safe_symmetric_crop(hunt_shape: np.array, caps: np.array, rec_di
     end   = np.zeros(3, dtype=int)
 
 
-    # Go sequencially trough x, y and z
+    # Go sequentially through x, y and z
     for ax in range(3):
         d = diff[ax]
 
         s_cap = s_caps[ax]
         e_cap = e_caps[ax]
 
-        # Find the ideal slip for start and end
+        # Find the ideal split for start and end
         s_ideal = d // 2
-        e_ideal = d - s_ideal
 
         # Clamp to caps
         s = min(s_ideal, s_cap)
