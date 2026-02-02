@@ -75,15 +75,15 @@ def fit_3D(
     best_model = copy.deepcopy(model)
     model.train()
 
-    for i in tqdm(range(epochs), desc="Training 3D Residual U-Net"):
+    for i in tqdm(range(epochs), desc="Training 3D Residual U-Net", leave=False):
         # pick a random pair volume
         patient_id = random.randint(0, len(training_pairs) - 1)
         x_path, y_path = training_pairs[patient_id][0], training_pairs[patient_id][1]
 
         # Load full volumes as tensors
         # TODO Legg til cropping med crop_axes
-        x = dataConverter.load_path_as_tensor(x_path)
-        y = dataConverter.load_path_as_tensor(y_path)
+        x = dataConverter.load_path_as_tensor(x_path, device)
+        y = dataConverter.load_path_as_tensor(y_path, device)
 
         # Make sure they have the same depth
         if (len(x) != len(y)):
@@ -136,8 +136,8 @@ def fit_3D(
 
                 with torch.no_grad():
                     for vx_path, vy_path in validation_pairs:
-                        val_x = dataConverter.load_path_as_tensor(vx_path)
-                        val_y = dataConverter.load_path_as_tensor(vy_path)
+                        val_x = dataConverter.load_path_as_tensor(vx_path, device)
+                        val_y = dataConverter.load_path_as_tensor(vy_path, device)
 
                         vout = model(val_x)
                         if isinstance(vout, (tuple, list)) and len(vout) >= 2:
