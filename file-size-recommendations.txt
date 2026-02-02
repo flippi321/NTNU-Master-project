@@ -1,0 +1,8 @@
+1 layers:   [160 196 174]      |   Crops required:    ((16, 16, 0), (17, 17, 19))
+2 layers:   [160 196 176]      |   Crops required:    ((16, 16, 0), (17, 17, 17))
+3 layers:   [160 200 176]      |   Crops required:    ((16, 14, 0), (17, 15, 17))
+4 layers:   [160 208 176]      |   Crops required:    ((16, 10, 0), (17, 11, 17))
+5 layers:   [160 224 192]      |   Crops required:    ((16, 2, 0), (17, 3, 1))
+6 layers:   [192 256 192]      |   Crops required:    ((0, -14, 0), (1, -13, 1))
+7 layers:   [256 256 256]      |   Crops required:    ((-32, -14, -32), (-31, -13, -31))
+8 layers:   [256 256 256]      |   Crops required:    ((-32, -14, -32), (-31, -13, -31))

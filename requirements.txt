@@ -1,0 +1,9 @@
+matplotlib==3.10.6
+nibabel==5.3.2
+numpy==2.3.3
+scikit-image==0.25.2
+torch==2.8.0
+scikit-learn==1.7.2
+pandas==2.3.3
+pytorch-msssim==1.0.0
+tqdm==4.67.1
