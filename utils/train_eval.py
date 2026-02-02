@@ -49,12 +49,12 @@ def fit_3D(
     device: torch.device,
     training_pairs: list[tuple[str, str]],
     validation_pairs: list[tuple[str, str]],
-    epochs=1,
+    epochs=1000,
     loss_func=None,
     dataConverter: DataConverter = DataConverter(),
     optimizer=None,
-    print_every: int = None,
     save_every: int = None,
+    checkpoint_every: int = 100,
     crop_axes: list[list, list] = None,
 ):
     """
@@ -75,7 +75,9 @@ def fit_3D(
     best_model = copy.deepcopy(model)
     model.train()
 
-    for i in tqdm(range(epochs), desc="Training 3D Residual U-Net", leave=False):
+    prog_bar = tqdm(range(epochs), desc="Training 3D Residual U-Net")
+
+    for i in prog_bar:
         # pick a random pair volume
         patient_id = random.randint(0, len(training_pairs) - 1)
         x_path, y_path = training_pairs[patient_id][0], training_pairs[patient_id][1]
@@ -116,7 +118,7 @@ def fit_3D(
         # --- log ---
         loss_history.append(loss_val)
 
-        # --- snapshot ---
+        # --- Save Snapshot ---
         if save_every and (i % save_every == 0 or i == epochs - 1):
             with torch.no_grad():
                 x_np = mid_axial_slice_5d(x)
@@ -124,8 +126,9 @@ def fit_3D(
                 recon_np = mid_axial_slice_5d(y_hat)
 
             saved_snapshots.append({"iter": i, "x": x_np, "y": y_np, "recon": recon_np, "loss": loss_val})
-            print(f"Saved snapshot at iter {i} (mid-axial slice)")
 
+        # --- Validation ---
+        if (i % checkpoint_every == 0 or i == epochs - 1):
             # Check if we got new best
             if len(validation_pairs) > 0:
                 model.eval()
@@ -163,10 +166,7 @@ def fit_3D(
 
                 # check for new best
                 if avg_loss < best_val_loss:
-                    print(
-                        f"Found new best loss on validation set: "
-                        f"{avg_loss:.6f} (prev {best_val_loss:.6f})"
-                    )
+                    prog_bar.set_postfix_str(f"Best loss on val {avg_loss:.6f}, (Iter {i})")
                     best_val_loss = avg_loss
                     best_model = copy.deepcopy(model)
         
