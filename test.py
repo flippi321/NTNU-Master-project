@@ -21,7 +21,7 @@ h4_tensor = data_converter.numpy_to_tensor(h4_num, 'cpu')
 data = data_analyser.get_data_info(data_loader, data_converter, max_layers=8)
 
 try:
-    file_path = "file-size-reccomendations.txt"
+    file_path = "file-size-recommendations.txt"
     # Remove old recommendations
     if os.path.exists(file_path):
         os.remove(file_path)
@@ -32,5 +32,5 @@ try:
             text = f"{i+1} layers:   {rec}      |   Crops required:    {crops}\n"
             file_object.write(text)
     print(f"Done!")
-except IOError as e:
+except IOError:
     print(f"Could not write to file :/")

@@ -7,7 +7,7 @@ class DataConverter():
         pass
     
     # ----- Loading From Path -----
-    def load_path_as_numpy(self, path):
+    def load_path_as_numpy(self, path: str):
         """
         Function to load a NIfTI volume as a numpy array using the data path
         """
@@ -15,7 +15,7 @@ class DataConverter():
         data = img.get_fdata()
         return data
     
-    def load_path_as_tensor(self, path, device = 'cuda'):
+    def load_path_as_tensor(self, path: str, device = 'cuda'):
         """
         Function to load a NIfTI volume as a torch tensor using the data path
         """
@@ -23,20 +23,20 @@ class DataConverter():
         tensor = torch.tensor(data, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)  # Get correct (1, 1, D, H, W) structure
         return tensor.float()
     
-    def get_middle_slice_from_path(self, data_path):
+    def get_middle_slice_from_path(self, data_path: str):
         data = self.load_path_as_numpy(data_path)
         return data[:, :, data.shape[2] // 2]
 
-    def get_slice_from_path(self, data_path, index=0):
+    def get_slice_from_path(self, data_path: str, index: int = 0):
         data = self.load_path_as_numpy(data_path)
         return data[:, :, index]
     
-    def get_all_slices_as_tensor(self, data_path, device = 'cuda'):
+    def get_all_slices_as_tensor(self, data_path:str, device = 'cuda'):
         data = self.load_path_as_numpy(data_path)
         return [torch.tensor(slice, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0) for slice in data.transpose(2, 0, 1)]
 
     # ----- Convert between Numpy and Tensor -----
-    def numpy_to_tensor(self, array: np.ndarray, device = 'cuda'):
+    def numpy_to_tensor(self, array: np.ndarray, device: str = 'cuda'):
         tensor = torch.tensor(array, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)  # Get correct (1, 1, D, H, W) structure
         return tensor.float()
     
