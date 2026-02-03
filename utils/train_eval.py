@@ -120,8 +120,8 @@ def fit_3D(
             y = change_3d_volume_size(y, crop_axes, remove_mode=True)
 
         # Make sure they have the same depth
-        if (len(x) != len(y)):
-            print(f"Warning: unequal depth in training pair for patient {patient_id} ({len(x)} != {len(y)}). Skipped pair...")
+        if (x.shape[2] != y.shape[2]) or (x.shape[3] != y.shape[3]) or (x.shape[4] != y.shape[4]):
+            print(f"Warning: unequal dimentions in training pair for patient {patient_id} (D: {x.shape[2]} vs {y.shape[2]}, H: {x.shape[3]} vs {y.shape[3]}, W: {x.shape[4]} vs {y.shape[4]}). Skipped pair...")
             continue
 
         # forward (support both y_hat or (y_hat, delta))
