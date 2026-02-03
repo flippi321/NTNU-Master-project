@@ -144,6 +144,7 @@ def fit_3D(
         loss_val = cap_logged_loss(loss)
     
         # Update model
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
