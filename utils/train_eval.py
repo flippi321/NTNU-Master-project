@@ -40,34 +40,6 @@ def mid_axial_slice_5d(volume: torch.Tensor | np.ndarray):
     sl = sl.clamp(0, 1).numpy()
     return sl
 
-def change_3d_volume_size(
-    tensor: torch.Tensor,
-    crop_axes: tuple[tuple[int, int, int], tuple[int, int, int]],
-    remove_mode: bool = True,
-):
-    """
-    tensor: (B, C, D, H, W)
-    crop_axes:
-        ((d_start, h_start, w_start),
-         (d_end,   h_end,   w_end))
-    remove_mode:
-        True  -> remove margins
-        False -> pad with zeros (black)
-    """
-
-    d0, h0, w0 = crop_axes[0]
-    d1, h1, w1 = crop_axes[1]
-
-    if remove_mode:
-        D, H, W = tensor.shape[-3:]
-        return tensor[:, :, d0:D - d1, h0:H - h1, w0:W - w1]
-
-    else:
-        # F.pad expects padding in reverse order:
-        # (w_left, w_right, h_left, h_right, d_left, d_right)
-        padding = (w0, w1, h0, h1, d0, d1)
-        return F.pad(tensor, padding, mode="constant", value=0)
-
 # ---------------------------------------------
 # 3D Training Loop
 # ---------------------------------------------
@@ -116,8 +88,8 @@ def fit_3D(
 
         # Crop if specified
         if crop_axes is not None:
-            x = change_3d_volume_size(x, crop_axes, remove_mode=True)
-            y = change_3d_volume_size(y, crop_axes, remove_mode=True)
+            x = dataConverter.get_volume_with_3d_change(tensor=x, crop_axes=crop_axes, remove_mode=True)
+            y = dataConverter.get_volume_with_3d_change(tensor=y, crop_axes=crop_axes, remove_mode=True)
 
         # Make sure they have the same depth
         if (x.shape[2] != y.shape[2]) or (x.shape[3] != y.shape[3]) or (x.shape[4] != y.shape[4]):
@@ -152,11 +124,11 @@ def fit_3D(
         loss_history.append(loss_val)
 
         # --- Save Snapshot ---
-        if save_every and (i % save_every == 0 or i == epochs - 1):
+        if save_every and (i % save_every == 0 or i == 0 or i == epochs - 1):
             if crop_axes is not None:
-                x = change_3d_volume_size(x, crop_axes, remove_mode=False)
-                y = change_3d_volume_size(y, crop_axes, remove_mode=False)
-                y_hat = change_3d_volume_size(y_hat, crop_axes, remove_mode=False)
+                x = dataConverter.get_volume_with_3d_change(tensor=x, crop_axes=crop_axes, remove_mode=False)
+                y = dataConverter.get_volume_with_3d_change(tensor=y, crop_axes=crop_axes, remove_mode=False)
+                y_hat = dataConverter.get_volume_with_3d_change(tensor=y_hat, crop_axes=crop_axes, remove_mode=False)
             
             with torch.no_grad():
                 x_np = mid_axial_slice_5d(x)
@@ -166,7 +138,7 @@ def fit_3D(
             saved_snapshots.append({"iter": i, "x": x_np, "y": y_np, "recon": recon_np, "loss": loss_val})
 
         # --- Validation ---
-        if (i % checkpoint_every == 0 or i == epochs - 1):
+        if (i % checkpoint_every == 0 or i == 0 or i == epochs - 1):
             # Check if we got new best
             if len(validation_pairs) > 0:
                 model.eval()

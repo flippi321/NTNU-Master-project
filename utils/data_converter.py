@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import nibabel as nib
+import torch.nn.functional as F
 
 class DataConverter():
     def __init__(self):
@@ -43,3 +44,33 @@ class DataConverter():
     def tensor_to_numpy(self, tensor: torch.Tensor):
         # TODO Sjekk at funker
         return tensor.detach().cpu().numpy()
+    
+    # ----- Volume Size Changes -----
+    def get_volume_with_3d_change(
+        self,
+        tensor: torch.Tensor,
+        crop_axes: tuple[tuple[int, int, int], tuple[int, int, int]],
+        remove_mode: bool = True,
+    ):
+        """
+        tensor: (B, C, D, H, W)
+        crop_axes:
+            ((d_start, h_start, w_start),
+            (d_end,   h_end,   w_end))
+        remove_mode:
+            True  -> remove margins
+            False -> pad with zeros (black)
+        """
+
+        d0, h0, w0 = crop_axes[0]
+        d1, h1, w1 = crop_axes[1]
+
+        if remove_mode:
+            D, H, W = tensor.shape[-3:]
+            return tensor[:, :, d0:D - d1, h0:H - h1, w0:W - w1]
+
+        else:
+            # F.pad expects padding in reverse order:
+            # (w_left, w_right, h_left, h_right, d_left, d_right)
+            padding = (w0, w1, h0, h1, d0, d1)
+            return F.pad(tensor, padding, mode="constant", value=0)
