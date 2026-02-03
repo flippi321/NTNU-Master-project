@@ -207,8 +207,9 @@ def fit_3D(
                     prog_bar.set_postfix_str(f"Best loss on val {avg_loss:.6f}, (Iter {i})")
                     best_val_loss = avg_loss
                     best_model = copy.deepcopy(model)
-        
-        # Finally reset optimizer for next iter
-        optimizer.zero_grad()
-    
+
+                # Restore training mode after validation
+                model.train()
+                best_model = copy.deepcopy(model)
+
     return model, loss_history, saved_snapshots, best_model
