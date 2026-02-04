@@ -24,21 +24,20 @@ def cap_logged_loss(loss: torch.Tensor, loss_cap: float = 1e6) -> float:
     capped = torch.clamp(loss, max=loss_cap)
     return float(capped.item())
 
-# TODO Evt finne en annen løsning her
-def mid_axial_slice_5d(volume: torch.Tensor | np.ndarray):
+def get_middle_slice_3D(volume: torch.Tensor | np.ndarray):
     """
     volume: (1, 1, D, H, W)
-    -> numpy slice (H, W) in [0,1] from the middle of D
+    -> numpy slice (D, W) in [0,1] from the middle of W
     """
     if isinstance(volume, torch.Tensor):
         t = volume.detach().cpu()
     else:
         t = torch.tensor(volume)
     _, _, D, H, W = t.shape
-    mid = D // 2
-    sl = t[0, 0, mid]  # (H, W)
-    sl = sl.clamp(0, 1).numpy()
-    return sl
+    mid = W // 2
+    sl = t[0, 0, :, :, mid]
+    return sl.clamp(0, 1).numpy()
+
 
 # ---------------------------------------------
 # 3D Training Loop
@@ -83,13 +82,13 @@ def fit_3D(
         x_path, y_path = training_pairs[patient_id][0], training_pairs[patient_id][1]
 
         # Load full volumes as tensors
-        x = dataConverter.load_path_as_tensor(x_path, device)
-        y = dataConverter.load_path_as_tensor(y_path, device)
+        x_full = dataConverter.load_path_as_tensor(x_path, device)
+        y_full = dataConverter.load_path_as_tensor(y_path, device)
 
         # Crop if specified
         if crop_axes is not None:
-            x = dataConverter.get_volume_with_3d_change(tensor=x, crop_axes=crop_axes, remove_mode=True)
-            y = dataConverter.get_volume_with_3d_change(tensor=y, crop_axes=crop_axes, remove_mode=True)
+            x = dataConverter.get_volume_with_3d_change(tensor=x_full, crop_axes=crop_axes, remove_mode=True)
+            y = dataConverter.get_volume_with_3d_change(tensor=y_full, crop_axes=crop_axes, remove_mode=True)
 
         # Make sure they have the same depth
         if (x.shape[2] != y.shape[2]) or (x.shape[3] != y.shape[3]) or (x.shape[4] != y.shape[4]):
@@ -99,21 +98,15 @@ def fit_3D(
         # forward (support both y_hat or (y_hat, delta))
         out = model(x)
 
-        # Unpack output
-        # TODO Kanskje fjerne en av disse?
-        if isinstance(out, (tuple, list)) and len(out) >= 2:
-            y_hat, _ = out[0], out[1]
-        else:
-            y_hat, _ = out, None    # Uhhhhhhhhhhhh?? TODO selvmord
+        # Res unet returns delta as well, we only need the recon
+        y_hat = out[0] if isinstance(out, (tuple, list)) else out
 
         # --- compute loss ---
         crit_out = loss_func(y_hat, y)
+        
         # TODO Sjekk hvem av disse som er tilfelle ved ssim
-        if isinstance(crit_out, (tuple, list)):
-            loss = crit_out[0]
-        else:
-            loss = crit_out
-        loss_val = cap_logged_loss(loss)
+        loss = crit_out[0] if isinstance(crit_out, (tuple, list)) else crit_out
+        capped_loss = cap_logged_loss(loss)
     
         # Update model
         optimizer.zero_grad()
@@ -121,21 +114,20 @@ def fit_3D(
         optimizer.step()
 
         # --- log ---
-        loss_history.append(loss_val)
+        loss_history.append(capped_loss)
 
         # --- Save Snapshot ---
         if save_every and (i % save_every == 0 or i == 0 or i == epochs - 1):
+            # Add padding for the exported
             if crop_axes is not None:
-                x = dataConverter.get_volume_with_3d_change(tensor=x, crop_axes=crop_axes, remove_mode=False)
-                y = dataConverter.get_volume_with_3d_change(tensor=y, crop_axes=crop_axes, remove_mode=False)
-                y_hat = dataConverter.get_volume_with_3d_change(tensor=y_hat, crop_axes=crop_axes, remove_mode=False)
+                y_hat_padded = dataConverter.get_volume_with_3d_change(tensor=y_hat, crop_axes=crop_axes, remove_mode=False)
             
             with torch.no_grad():
-                x_np = mid_axial_slice_5d(x)
-                y_np = mid_axial_slice_5d(y)
-                recon_np = mid_axial_slice_5d(y_hat)
+                x_np = get_middle_slice_3D(x_full)
+                y_np = get_middle_slice_3D(y_full)
+                recon_np = get_middle_slice_3D(y_hat_padded)
 
-            saved_snapshots.append({"iter": i, "x": x_np, "y": y_np, "recon": recon_np, "loss": loss_val})
+            saved_snapshots.append({"iter": i, "x": x_np, "y": y_np, "recon": recon_np, "loss": capped_loss})
 
         # --- Validation ---
         if (i % checkpoint_every == 0 or i == 0 or i == epochs - 1):
