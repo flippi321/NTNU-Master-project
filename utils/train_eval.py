@@ -52,7 +52,7 @@ def fit_3D(
     loss_func=None,
     dataConverter: DataConverter = DataConverter(),
     optimizer=None,
-    save_every: int = None,
+    snapshot_every: int = None,
     checkpoint_every: int = 100,
     crop_axes: list[tuple, tuple] = None,
 ):
@@ -117,7 +117,7 @@ def fit_3D(
         loss_history.append(capped_loss)
 
         # --- Save Snapshot ---
-        if save_every and (i % save_every == 0 or i == 0 or i == epochs - 1):
+        if snapshot_every and (i % snapshot_every == 0 or i == 0 or i == epochs - 1):
             # Add padding for the exported
             if crop_axes is not None:
                 y_hat_padded = dataConverter.get_volume_with_3d_change(tensor=y_hat, crop_axes=crop_axes, remove_mode=False)
