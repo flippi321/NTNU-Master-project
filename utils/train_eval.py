@@ -149,21 +149,21 @@ def fit_3D(
                         val_x = dataConverter.load_path_as_tensor(vx_path, device)
                         val_y = dataConverter.load_path_as_tensor(vy_path, device)
 
+                        if crop_axes is not None:
+                            val_x = dataConverter.get_volume_with_3d_change(tensor=val_x, crop_axes=crop_axes, remove_mode=True)
+                            val_y = dataConverter.get_volume_with_3d_change(tensor=val_y, crop_axes=crop_axes, remove_mode=True)
+
                         vout = model(val_x)
                         if isinstance(vout, (tuple, list)) and len(vout) >= 2:
                             vy_hat, _ = vout[0], vout[1]
                         else:
                             vy_hat, _ = vout, None
 
-                        # validation loss uses same loss_func fallback logic
                         vloss = None
                         if loss_func is not None:
                             try:
                                 vcrit_out = loss_func(vy_hat, val_y)
-                                if isinstance(vcrit_out, (tuple, list)):
-                                    vloss = vcrit_out[0]
-                                else:
-                                    vloss = vcrit_out
+                                vloss = vcrit_out[0] if isinstance(vcrit_out, (tuple, list)) else vcrit_out
                             except TypeError:
                                 pass
 
