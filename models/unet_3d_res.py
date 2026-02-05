@@ -8,12 +8,15 @@ class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
         self.block = nn.Sequential(
+            # First convolutional layer
             nn.Conv3d(in_ch, out_ch, 3, padding=1, bias=False),
-            nn.InstanceNorm3d(out_ch),
-            nn.LeakyReLU(0.1, inplace=True),
+            nn.BatchNorm3d(out_ch),
+            nn.ReLU(inplace=True),
+
+            # Second convolutional layer
             nn.Conv3d(out_ch, out_ch, 3, padding=1, bias=False),
-            nn.InstanceNorm3d(out_ch),
-            nn.LeakyReLU(0.1, inplace=True),
+            nn.BatchNorm3d(out_ch),
+            nn.ReLU(inplace=True),
         )
     def forward(self, x): return self.block(x)
 
@@ -30,16 +33,27 @@ class Down(nn.Module):
 
 
 class Up(nn.Module):
-    def __init__(self, in_ch, out_ch, do_upsample: bool = True):
+    def __init__(self, in_ch, out_ch):
         super().__init__()
-        self.do_upsample = do_upsample
         self.up = nn.Upsample(scale_factor=2, mode="trilinear", align_corners=False)
         self.reduce = nn.Conv3d(in_ch, out_ch, kernel_size=1)
         self.conv = ConvBlock(out_ch * 2, out_ch)
 
     def forward(self, x, skip):
-        if self.do_upsample:
-            x = self.up(x)
+        x = self.up(x)
+        x = self.reduce(x)
+
+        x = torch.cat([x, skip], dim=1)
+        return self.conv(x)
+
+class Out(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.up = nn.Upsample(scale_factor=2, mode="trilinear", align_corners=False)
+        self.reduce = nn.Conv3d(in_ch, out_ch, kernel_size=1)
+        self.conv = ConvBlock(out_ch * 2, out_ch)
+
+    def forward(self, x, skip):
         x = self.reduce(x)
 
         x = torch.cat([x, skip], dim=1)
@@ -62,7 +76,7 @@ class ResidualUNet3D(nn.Module):
         self.u4 = Up(base * 16, base * 8)
         self.u3 = Up(base * 8, base * 4)
         self.u2 = Up(base * 4, base * 2)
-        self.u1 = Up(base * 2, base, do_upsample=False)  # last layer: no upsample
+        self.u1 = Out(base * 2, base)  # last layer: no upsample
 
         self.out = nn.Conv3d(base, out_ch, kernel_size=1)
 
