@@ -89,13 +89,15 @@ def fit_3D(
         if crop_axes is not None:
             x = dataConverter.get_volume_with_3d_change(tensor=x_full, crop_axes=crop_axes, remove_mode=True)
             y = dataConverter.get_volume_with_3d_change(tensor=y_full, crop_axes=crop_axes, remove_mode=True)
+        else:
+            x, y = x_full, y_full
 
         # Make sure they have the same depth
         if (x.shape[2] != y.shape[2]) or (x.shape[3] != y.shape[3]) or (x.shape[4] != y.shape[4]):
             print(f"Warning: unequal dimentions in training pair for patient {patient_id} (D: {x.shape[2]} vs {y.shape[2]}, H: {x.shape[3]} vs {y.shape[3]}, W: {x.shape[4]} vs {y.shape[4]}). Skipped pair...")
             continue
 
-        # forward (support both y_hat or (y_hat, delta))
+        # forward
         out = model(x)
 
         # Res unet returns delta as well, we only need the recon
@@ -121,6 +123,8 @@ def fit_3D(
             # Add padding for the exported
             if crop_axes is not None:
                 y_hat_padded = dataConverter.get_volume_with_3d_change(tensor=y_hat, crop_axes=crop_axes, remove_mode=False)
+            else:
+                y_hat_padded = y_hat
             
             with torch.no_grad():
                 x_np = get_middle_slice_3D(x_full)
@@ -144,6 +148,8 @@ def fit_3D(
                         if crop_axes is not None:
                             val_x = dataConverter.get_volume_with_3d_change(tensor=val_x, crop_axes=crop_axes, remove_mode=True)
                             val_y = dataConverter.get_volume_with_3d_change(tensor=val_y, crop_axes=crop_axes, remove_mode=True)
+                        else:
+                            val_x, val_y = val_x, val_y
 
                         vout = model(val_x)
                         if isinstance(vout, (tuple, list)) and len(vout) >= 2:
