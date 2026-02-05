@@ -174,6 +174,5 @@ def fit_3D(
 
                 # Restore training mode after validation
                 model.train()
-                best_model = copy.deepcopy(model)
 
     return model, loss_history, saved_snapshots, best_model
