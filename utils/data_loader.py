@@ -35,10 +35,9 @@ class DataLoader():
         Function to split the dataset into training and testing paths
         """
 
-        # We first shuffle all entries
+        # We first shuffle all entries (using a copy to avoid mutating self.all_candidates)
         if seed is None:
             seed = random.randint(1, 10000)
-        # We first shuffle all entries (using a copy to avoid mutating self.all_candidates)
         random.seed(seed)
         candidates = self.all_candidates.copy()
         random.shuffle(candidates)

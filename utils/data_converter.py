@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import nibabel as nib
+import torch.nn.functional as F
 
 class DataConverter():
     def __init__(self):
@@ -15,12 +16,12 @@ class DataConverter():
         data = img.get_fdata()
         return data
     
-    def load_path_as_tensor(self, path: str):
+    def load_path_as_tensor(self, path: str, device = 'cuda'):
         """
         Function to load a NIfTI volume as a torch tensor using the data path
         """
         data = self.load_path_as_numpy(path)
-        tensor = torch.tensor(data, dtype=torch.float32).unsqueeze(0)  # TODO: Sjekk om vi kan fjerne unsqueeze
+        tensor = torch.tensor(data, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)  # Get correct (1, 1, D, H, W) structure
         return tensor.float()
     
     def get_middle_slice_from_path(self, data_path: str):
@@ -31,15 +32,45 @@ class DataConverter():
         data = self.load_path_as_numpy(data_path)
         return data[:, :, index]
     
-    def get_all_slices_as_tensor(self, data_path: str):
+    def get_all_slices_as_tensor(self, data_path:str, device = 'cuda'):
         data = self.load_path_as_numpy(data_path)
-        return [torch.tensor(slice, dtype=torch.float32) for slice in data.transpose(2, 0, 1)]
+        return [torch.tensor(slice, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0) for slice in data.transpose(2, 0, 1)]
 
     # ----- Convert between Numpy and Tensor -----
     def numpy_to_tensor(self, array: np.ndarray, device: str = 'cuda'):
-        tensor = torch.tensor(array, dtype=torch.float32, device=device).unsqueeze(0)  # TODO: Sjekk om vi kan fjerne unsqueeze
+        tensor = torch.tensor(array, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)  # Get correct (1, 1, D, H, W) structure
         return tensor.float()
     
     def tensor_to_numpy(self, tensor: torch.Tensor):
         # TODO Sjekk at funker
         return tensor.detach().cpu().numpy()
+    
+    # ----- Volume Size Changes -----
+    def get_volume_with_3d_change(
+        self,
+        tensor: torch.Tensor,
+        crop_axes: tuple[tuple[int, int, int], tuple[int, int, int]],
+        remove_mode: bool = True,
+    ):
+        """
+        tensor: (B, C, D, H, W)
+        crop_axes:
+            ((d_start, h_start, w_start),
+            (d_end,   h_end,   w_end))
+        remove_mode:
+            True  -> remove margins
+            False -> pad with zeros (black)
+        """
+
+        d0, h0, w0 = crop_axes[0]
+        d1, h1, w1 = crop_axes[1]
+
+        if remove_mode:
+            D, H, W = tensor.shape[-3:]
+            return tensor[:, :, d0:D - d1, h0:H - h1, w0:W - w1]
+
+        else:
+            # F.pad expects padding in reverse order:
+            # (w_left, w_right, h_left, h_right, d_left, d_right)
+            padding = (w0, w1, h0, h1, d0, d1)
+            return F.pad(tensor, padding, mode="constant", value=0)
