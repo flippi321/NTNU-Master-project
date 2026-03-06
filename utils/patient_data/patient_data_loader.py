@@ -83,16 +83,28 @@ class PatientDataLoader():
 
         return df_temp
 
-    def get_client_feature_corr(self, feature_df: pd.DataFrame):
+    def get_client_feature_corr(self, feature_df: pd.DataFrame, show_labels: bool = False):
         """
-        Get the Pearson correlation between all features in the dataframe and return a correlation matrix
+        Get the Pearson correlation between all features in the dataframe
+        and return a correlation matrix.
         """
         corr_matrix = feature_df.corr(method='pearson')
 
-        # Visualize the correlation matrix
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0)
+        plt.figure(figsize=(12, 10))
+        sns.heatmap(
+            corr_matrix,
+            annot=False,
+            cmap='coolwarm',
+            center=0,
+            xticklabels=show_labels,
+            yticklabels=show_labels
+        )
         plt.title('Feature Correlation Matrix')
+
+        if not show_labels:
+            plt.xticks([])
+            plt.yticks([])
+
         plt.show()
 
         return corr_matrix
@@ -103,21 +115,15 @@ if __name__ == "__main__":
     if not os.path.exists("combined_summaries.parquet"):
         print("No combined summaries found, loading and processing individual summary files...")
         org_summaries = loader.get_client_summaries()
-        print(org_summaries.head())
-        loader.save_client_summaries(org_summaries, output_path='combined_summaries', format='both')
-
         sanitized_summaries = loader.sanitize_dataframe(org_summaries)
-        loader.save_client_summaries(sanitized_summaries, output_path='combined_summaries_sanitized', format='both')
+        print(sanitized_summaries.head())
+        loader.save_client_summaries(sanitized_summaries, output_path='combined_summaries', format='both')
 
         summaries = loader.normalize_dataframe(sanitized_summaries)
         loader.save_client_summaries(summaries, output_path='combined_summaries_normalized', format='both')
     else:
         print("Loading combined summaries from file...")
-        summaries = loader.load_client_file(file_path="combined_summaries.parquet", format='parquet')
-        summaries_norm = loader.normalize_dataframe(summaries)
-        print(summaries_norm.head())
+        summaries = loader.load_client_file(file_path="combined_summaries_normalized.parquet", format='parquet')
 
-        loader.save_client_summaries(summaries_norm, output_path='combined_summaries_normalized', format='both')
-
-    #corr_matrix = loader.get_client_feature_corr(sanitized_summaries)
-    #print(corr_matrix)
+        corr_matrix = loader.get_client_feature_corr(summaries.drop(columns=["SubjID", "VisitID"]))
+        print(corr_matrix)
