@@ -6,6 +6,8 @@ fastsurfer/
 my_fastsurfer_analysis
 my_mri_data
 my_fs_licence.txt
+subjects_list.txt
+fastsurfer-gpu.sif
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
