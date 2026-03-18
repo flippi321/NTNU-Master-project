@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 import nibabel as nib
@@ -15,6 +16,18 @@ class DataConverter():
         img = nib.load(path)
         data = img.get_fdata()
         return data
+    
+    def numpy_to_nib_gz(self, volume: np.ndarray, out_path: str):
+        """
+        Function to transform a 3D volume to a nii.gz file
+        """
+        affine = np.eye(4)
+
+        img = nib.Nifti1Image(volume, affine)
+        nib.save(img, str(out_path))
+
+        return os.path.exists(out_path)
+    
     
     def load_path_as_tensor(self, path: str, device = 'cuda'):
         """
@@ -43,7 +56,16 @@ class DataConverter():
     
     def tensor_to_numpy(self, tensor: torch.Tensor):
         # TODO Sjekk at funker
-        return tensor.detach().cpu().numpy()
+        return tensor.detach().cpu().squeeze().numpy()
+    
+    # TODO Make not hardcoded
+    def get_patient_feature_vector(self, data_path: str, usage_list=None) -> torch.Tensor:
+        usage_list = usage_list or [False, False, False, False, False, False]
+        vectors = torch.tensor([0.0, 1.0, 0.5, 1.0, 0.25, 0.75], dtype=torch.float32)
+
+        mask = torch.tensor(usage_list, dtype=torch.float32)
+        feature_vector = vectors * mask
+        return feature_vector.unsqueeze(0)  # [1, 6]
     
     # ----- Volume Size Changes -----
     def get_volume_with_3d_change(
