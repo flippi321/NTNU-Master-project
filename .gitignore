@@ -2,6 +2,7 @@
 out/
 
 # Freesurfer outputs
+fastsurfer/
 my_fastsurfer_analysis
 my_mri_data
 my_fs_licence.txt
