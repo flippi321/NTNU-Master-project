@@ -1,6 +1,11 @@
 # Model outputs
 out/
 
+# Freesurfer outputs
+my_fastsurfer_analysis
+my_mri_data
+my_fs_licence.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
