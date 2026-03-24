@@ -18,8 +18,8 @@ data_analyser = DataAnalyser()
 device = torch.device("cuda:0")
 
 test_set, validation_set, test_set = data_loader.split_dataset_paths(seed=42)
-output_dir = "out/unets"
-unet_path = f"{output_dir}/3d_unet_model_standard.pt"
+output_dir = "NTNU-Master-project/out"
+unet_path = f"{output_dir}/unet/3d_unet_model_standard.pt"
 
 # No .to(device) — UNet3D places layers itself
 unet = UNet3D(in_ch=1, base=32)
@@ -72,8 +72,8 @@ for i in range(n_gen):
     y_num     = data_converter.tensor_to_numpy(y_whole)
     y_hat_num = data_converter.tensor_to_numpy(y_hat_whole)
 
-    data_converter.numpy_to_nib_gz(x_num, f"out/gen/x/{i}")
-    data_converter.numpy_to_nib_gz(y_num, f"out/gen/y/{i}")
-    data_converter.numpy_to_nib_gz(y_hat_num, f"out/gen/y_hat/{i}")
+    data_converter.numpy_to_nib_gz(x_num, f"{output_dir}/out/gen/x/{i}")
+    data_converter.numpy_to_nib_gz(y_num, f"{output_dir}/out/gen/y/{i}")
+    data_converter.numpy_to_nib_gz(y_hat_num, f"{output_dir}/out/gen/y_hat/{i}")
 
 print("Done!")
