@@ -94,11 +94,13 @@ def fit_3D(
             print(f"Warning: unequal dimentions in training pair for patient {patient_id} (D: {x.shape[2]} vs {y.shape[2]}, H: {x.shape[3]} vs {y.shape[3]}, W: {x.shape[4]} vs {y.shape[4]}). Skipped pair...")
             continue
 
-        # forward
         out = model(x)
 
         # Res unet returns delta as well, we only need the recon
         y_hat = out[0] if isinstance(out, (tuple, list)) else out
+
+        # Move y to wherever y_hat landed (cuda:1 in multi-GPU setup)
+        y = y.to(y_hat.device)
 
         # --- compute loss ---
         crit_out = loss_func(y_hat, y)
@@ -119,7 +121,10 @@ def fit_3D(
         if snapshot_every and (i % snapshot_every == 0 or i == 0 or i == epochs - 1):
             # Add padding for the exported
             if crop_axes is not None:
-                y_hat_padded = dataConverter.get_volume_with_3d_change(tensor=y_hat, crop_axes=crop_axes, remove_mode=False)
+                # Move y_hat back to cpu/device for padding op
+                y_hat_padded = dataConverter.get_volume_with_3d_change(
+                    tensor=y_hat.to(device), crop_axes=crop_axes, remove_mode=False
+                )
             else:
                 y_hat_padded = y_hat
             
@@ -145,14 +150,12 @@ def fit_3D(
                         if crop_axes is not None:
                             val_x = dataConverter.get_volume_with_3d_change(tensor=val_x, crop_axes=crop_axes, remove_mode=True)
                             val_y = dataConverter.get_volume_with_3d_change(tensor=val_y, crop_axes=crop_axes, remove_mode=True)
-                        else:
-                            val_x, val_y = val_x, val_y
 
                         vout = model(val_x)
-                        if isinstance(vout, (tuple, list)) and len(vout) >= 2:
-                            vy_hat, _ = vout[0], vout[1]
-                        else:
-                            vy_hat, _ = vout, None
+                        vy_hat = vout[0] if isinstance(vout, (tuple, list)) else vout
+
+                        # Move val_y to wherever vy_hat landed
+                        val_y = val_y.to(vy_hat.device)
 
                         vloss = None
                         try:
