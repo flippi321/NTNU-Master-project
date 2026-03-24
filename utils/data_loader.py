@@ -2,7 +2,7 @@ import os
 import random
 
 class DataLoader():
-    def __init__(self, root_path: str = '../data'):
+    def __init__(self, root_path: str = 'NTNU-Master-project/data'):
         self.datasets = ['HUNT3', 'HUNT4']  # This won't change, so hardcoded it
         self.root = root_path
         self.all_candidates = os.listdir(os.path.join(self.root, self.datasets[0]))
