@@ -99,9 +99,6 @@ def fit_3D(
         # Res unet returns delta as well, we only need the recon
         y_hat = out[0] if isinstance(out, (tuple, list)) else out
 
-        # Move y to wherever y_hat landed (cuda:1 in multi-GPU setup)
-        y = y.to(y_hat.device)
-
         # --- compute loss ---
         crit_out = loss_func(y_hat, y)
         
@@ -153,9 +150,6 @@ def fit_3D(
 
                         vout = model(val_x)
                         vy_hat = vout[0] if isinstance(vout, (tuple, list)) else vout
-
-                        # Move val_y to wherever vy_hat landed
-                        val_y = val_y.to(vy_hat.device)
 
                         vloss = None
                         try:
@@ -209,7 +203,8 @@ def fit_feature_based_3D(
     
     # Set up values
     optimizer = optimizer or build_optimizer(model)
-    scaler = torch.GradScaler(enabled=(device.type == "cuda"), device=device)
+    device_gpu_available = device.type == "cuda" or device.type == "cuda:0" or device.type == "cuda:1"
+    scaler = torch.GradScaler(enabled=device_gpu_available, device=device)
     saved_snapshots, loss_history = [], []
     best_val_loss = np.inf
     best_model = copy.deepcopy(model)
@@ -245,7 +240,7 @@ def fit_feature_based_3D(
         cond = dataConverter.get_patient_feature_vector(x_path, usage_list=feature_usage_list).to(device=device, dtype=x.dtype)
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.autocast(enabled=(device.type == "cuda"), device_type=device.type):
+        with torch.autocast(enabled=device_gpu_available, device_type=device.type):
             out = model(x, cond)
 
             # Res unet returns delta as well, we only need the recon
@@ -283,7 +278,7 @@ def fit_feature_based_3D(
 
         # free ASAP
         del x_full, y_full, x, y, cond, out, y_hat, crit_out, loss
-        if device.type == "cuda":
+        if device_gpu_available:
             torch.cuda.synchronize()
 
         # --- Validation ---
@@ -303,7 +298,7 @@ def fit_feature_based_3D(
 
                     vcond = dataConverter.get_patient_feature_vector(vx_path, usage_list=feature_usage_list).to(device=device, dtype=val_x.dtype)
 
-                    with torch.autocast(enabled=(device.type == "cuda"), device_type=device.type):
+                    with torch.autocast(enabled=device_gpu_available, device_type=device.type):
                         vout = model(val_x, vcond)
                         vy_hat = vout[0] if isinstance(vout, (tuple, list)) else vout
                         vcrit_out = loss_func(vy_hat, val_y)
