@@ -177,43 +177,56 @@ class FiLMUNet3D(nn.Module):
     def __init__(self, in_ch=1, out_ch=1, base=32, cond_dim=6, use_simple: bool = True):
         super().__init__()
         self.use_simple = use_simple
+        self.dev0 = torch.device("cuda:0")
+        self.dev1 = torch.device("cuda:1")
 
-        # Encoder
-        self.e1 = ConvBlock(in_ch, base, use_simple=use_simple)
-        self.e2 = Down(base, base * 2, use_simple=use_simple)
-        self.e3 = Down(base * 2, base * 4, use_simple=use_simple)
-        self.e4 = Down(base * 4, base * 8, use_simple=use_simple)
+        # Encoder (GPU 0) — lighter
+        self.e1 = ConvBlock(in_ch, base, use_simple=use_simple).to(self.dev0)
+        self.e2 = Down(base, base * 2, use_simple=use_simple).to(self.dev0)
+        self.e3 = Down(base * 2, base * 4, use_simple=use_simple).to(self.dev0)
+        self.e4 = Down(base * 4, base * 8, use_simple=use_simple).to(self.dev0)
 
-        # Bottleneck (NOT FiLMed)
-        self.b1 = ConvBlock(base * 8, base * 16, use_simple=use_simple)
-        self.b2 = ConvBlock(base * 16, base * 16, use_simple=use_simple)
+        # Bottleneck on GPU 1 — this is the biggest memory spike
+        self.b1 = ConvBlock(base * 8, base * 16, use_simple=use_simple).to(self.dev1)
+        self.b2 = ConvBlock(base * 16, base * 16, use_simple=use_simple).to(self.dev1)
 
-        # Decoder (NOT FiLMed)
-        self.u4 = Up(base * 16, base * 8, use_simple=use_simple)
-        self.u3 = Up(base * 8, base * 4, use_simple=use_simple)
-        self.u2 = Up(base * 4, base * 2, use_simple=use_simple)
-        self.u1 = Out(base * 2, base, use_simple=use_simple)
+        # Heavy decoder on GPU 1
+        self.u4 = Up(base * 16, base * 8, use_simple=use_simple).to(self.dev1)
+        self.u3 = Up(base * 8, base * 4, use_simple=use_simple).to(self.dev1)
 
-        self.out = nn.Conv3d(base, out_ch, 1)
+        # Light decoder on GPU 1
+        self.u2  = Up(base * 4, base * 2, use_simple=use_simple).to(self.dev1)
+        self.u1  = Out(base * 2, base, use_simple=use_simple).to(self.dev1)
 
-        # FiLM generator (encoder blocks only)
+        self.out = nn.Conv3d(base, out_ch, 1).to(self.dev1)
+
+        # FiLM generator (GPU 0)
         if use_simple:
-            self.film_gen = FiLMSimpleGenerator(cond_dim=cond_dim, n_blocks=4, hidden=128)
+            self.film_gen = FiLMSimpleGenerator(cond_dim=cond_dim, n_blocks=4, hidden=128).to(self.dev0)
         else:
             enc_channels = [base, base * 2, base * 4, base * 8]
-            self.film_gen = FiLMComplexGenerator(cond_dim=cond_dim, enc_channels=enc_channels, hidden=128)
+            self.film_gen = FiLMComplexGenerator(cond_dim=cond_dim, enc_channels=enc_channels, hidden=128).to(self.dev0)
 
     def forward(self, x, cond):
-        films = self.film_gen(cond)  # list of 4 (gamma,beta)
+        films = self.film_gen(cond.to(self.dev0))
 
-        s1 = self.e1(x,  film=films[0])
+        # --- Encoder on GPU 0 ---
+        x = x.to(self.dev0)
+        s1 = self.e1(x,   film=films[0])
         s2, x2 = self.e2(s1, film=films[1])
         s3, x3 = self.e3(x2, film=films[2])
         s4, x4 = self.e4(x3, film=films[3])
 
+        # --- Move everything to GPU 1 for bottleneck + full decoder ---
+        x4 = x4.to(self.dev1)
+        s4 = s4.to(self.dev1)
+        s3 = s3.to(self.dev1)
+        s2 = s2.to(self.dev1)
+        s1 = s1.to(self.dev1)
+
         b = self.b2(self.b1(x4, film=None), film=None)
 
-        d4 = self.u4(b, s4)
+        d4 = self.u4(b,  s4)
         d3 = self.u3(d4, s3)
         d2 = self.u2(d3, s2)
         d1 = self.u1(d2, s1)
