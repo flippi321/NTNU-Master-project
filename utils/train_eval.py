@@ -2,10 +2,9 @@ import os
 import torch
 import random
 import numpy as np
-import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from utils.data_converter import DataConverter
+from utils.metadata_loader import MetaDataLoader
 from tqdm import tqdm
 import copy
 
@@ -187,11 +186,11 @@ def fit_feature_based_3D(
     epochs=1000,
     loss_func=None,
     dataConverter: DataConverter = DataConverter(),
+    metadataLoader: MetaDataLoader = MetaDataLoader(),
     optimizer=None,
     snapshot_every: int = None,
     checkpoint_every: int = 100,
     crop_axes: list[tuple, tuple] = None,
-    feature_usage_list: list[bool] = None,
 ):
     """
     Train a 3D model on full volumes using HuntDataLoader.
@@ -209,9 +208,6 @@ def fit_feature_based_3D(
     best_val_loss = np.inf
     best_model = copy.deepcopy(model)
     model.train()
-
-    # Ensure feature_usage_list is set
-    feature_usage_list = feature_usage_list or [False]*6
 
     prog_bar = tqdm(range(epochs), desc="Training 3D Residual U-Net")
 
@@ -237,7 +233,9 @@ def fit_feature_based_3D(
             continue
 
         # Get feature vector and forward
-        cond = dataConverter.get_patient_feature_vector(x_path, usage_list=feature_usage_list).to(device=device, dtype=x.dtype)
+        cond = metadataLoader.get(x_path, sex=True, age_hunt3=True)
+        cond = torch.tensor(cond, dtype=x.dtype).unsqueeze(0).to(device)
+
         optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast(enabled=device_gpu_available, device_type=device.type):
@@ -296,7 +294,8 @@ def fit_feature_based_3D(
                         val_x = dataConverter.get_volume_with_3d_change(tensor=val_x, crop_axes=crop_axes, remove_mode=True)
                         val_y = dataConverter.get_volume_with_3d_change(tensor=val_y, crop_axes=crop_axes, remove_mode=True)
 
-                    vcond = dataConverter.get_patient_feature_vector(vx_path, usage_list=feature_usage_list).to(device=device, dtype=val_x.dtype)
+                        vcond = metadataLoader.get(vx_path, sex=True, age_hunt3=True)
+                        vcond = torch.tensor(vcond, dtype=val_x.dtype).unsqueeze(0).to(device)
 
                     with torch.autocast(enabled=device_gpu_available, device_type=device.type):
                         vout = model(val_x, vcond)
