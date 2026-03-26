@@ -71,7 +71,7 @@ def fit_3D(
     best_model = copy.deepcopy(model)
     model.train()
 
-    prog_bar = tqdm(range(epochs), desc="Training 3D Residual U-Net")
+    prog_bar = tqdm(range(epochs), desc="Training 3D U-Net")
 
     for i in prog_bar:
         # pick a random pair volume
