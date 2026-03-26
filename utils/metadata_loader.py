@@ -5,12 +5,12 @@ class MetaDataLoader:
     def __init__(self, root_path="data/metadata"):
         self.data_root = root_path
         self._combined = None
+        self._index = {}
 
     def _get_id_from_path(self, path: str) -> str:
-        filename = os.path.basename(path)  
-        candidate_id = filename.split('_')[0]
-        return candidate_id
-        
+        filename = os.path.basename(path)
+        return filename.split('_')[0]
+
     def _load(self):
         if self._combined is not None:
             return
@@ -30,23 +30,22 @@ class MetaDataLoader:
         })
 
         self._combined = hunt4.merge(hunt3[["hunt_3_long_id", "age_hunt3"]], on="hunt_3_long_id", how="inner")
-        
-        # Extract hunt_id from hunt_3_long_id
-        self._combined["hunt_id"] = self._combined["hunt_3_long_id"].apply(lambda x: str(int(x))[-5:])
 
-        # Feature engineering
+        self._combined["hunt_id"] = self._combined["hunt_3_long_id"].apply(lambda x: str(int(x))[-5:])
         self._combined["sex"] = self._combined["sex"].map({"M": 0, "F": 1})
         self._combined["age_hunt3"] = (self._combined["age_hunt3"] - self._combined["age_hunt3"].min()) / (self._combined["age_hunt3"].max() - self._combined["age_hunt3"].min())
         self._combined["age_hunt4"] = (self._combined["age_hunt4"] - self._combined["age_hunt4"].min()) / (self._combined["age_hunt4"].max() - self._combined["age_hunt4"].min())
 
+        # Build O(1) lookup index
+        self._index = self._combined.set_index("hunt_id").to_dict(orient="index")
+
     def get(self, hunt_path, long_id=False, sex=False, age_hunt3=False, age_hunt4=False, labeled=False):
         self._load()
         hunt_id = self._get_id_from_path(hunt_path)
-        row = self._combined[self._combined["hunt_id"] == hunt_id]
-        if row.empty:
+        row = self._index.get(hunt_id)
+        if row is None:
             print(f"No metadata found for hunt_id: {hunt_id}")
             return None
-        row = row.iloc[0]
         result = {}
         if long_id:   result["hunt4_id"]  = row["hunt4_id"]
         if sex:       result["sex"]        = row["sex"]
