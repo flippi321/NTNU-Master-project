@@ -46,7 +46,7 @@ else:
         dataConverter=data_converter,
         snapshot_every=500,
         checkpoint_every=250,
-        crop_axes=((16, 10, 0), (17, 11, 17)),
+        crop_axes=crop_axes,
         #feature_usage_list=[True, True, True, True, True, True],
     )
 
