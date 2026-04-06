@@ -23,16 +23,18 @@ class FiLMLayer(nn.Module):
 
 class FiLMSimpleGenerator(nn.Module):
     """
-    Generates (gamma, beta) for each encoder block, FiLM-Si style.
+    Generates (gamma, beta) for each conditioned block, FiLM-Si style.
     Output per block: gamma, beta are [B,1].
     """
-    def __init__(self, cond_dim: int, n_blocks: int, hidden: int = 128):
+    def __init__(self, cond_dim: int, n_blocks: int, hidden: int = 64):
         super().__init__()
         self.n_blocks = n_blocks
         total = 2 * n_blocks  # 2 scalars per block
 
         self.mlp = nn.Sequential(
             nn.Linear(cond_dim, hidden),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Linear(hidden, hidden),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Linear(hidden, total),
         )
@@ -55,16 +57,20 @@ class FiLMSimpleGenerator(nn.Module):
 
 class FiLMComplexGenerator(nn.Module):
     """
-    Generates (gamma, beta) for each encoder block, complex (per-channel) FiLM.
+    Generates (gamma, beta) for each conditioned block, per-channel FiLM.
     Output per block: gamma, beta are [B,C_block] for that block.
+    all_channels is an ordered list of channel counts for all conditioned blocks
+    (encoder + bottleneck + decoder in forward order).
     """
-    def __init__(self, cond_dim: int, enc_channels: list[int], hidden: int = 128):
+    def __init__(self, cond_dim: int, all_channels: list[int], hidden: int = 64):
         super().__init__()
-        self.enc_channels = enc_channels
-        total = sum(2 * c for c in enc_channels)  # per-channel gamma+beta
+        self.all_channels = all_channels
+        total = sum(2 * c for c in all_channels)  # per-channel gamma+beta
 
         self.mlp = nn.Sequential(
             nn.Linear(cond_dim, hidden),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Linear(hidden, hidden),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Linear(hidden, total),
         )
@@ -78,7 +84,7 @@ class FiLMComplexGenerator(nn.Module):
         v = self.mlp(cond)  # [B, total]
         params = []
         idx = 0
-        for C in self.enc_channels:
+        for C in self.all_channels:
             g = v[:, idx:idx + C]; idx += C  # [B,C]
             b = v[:, idx:idx + C]; idx += C  # [B,C]
             params.append((1.0 + g, b))
@@ -149,11 +155,11 @@ class Up(nn.Module):
         self.reduce = nn.Conv3d(in_ch, out_ch, 1)
         self.conv   = ConvBlock(out_ch * 2, out_ch)
 
-    def forward(self, x, skip):
+    def forward(self, x, skip, film=None):
         x = self.up(x)
         x = self.reduce(x)
         x = torch.cat([x, skip], dim=1)
-        return self.conv(x, film=None)  # decoder is NOT FiLMed
+        return self.conv(x, film=film)
 
 
 class Out(nn.Module):
@@ -162,30 +168,32 @@ class Out(nn.Module):
         self.reduce = nn.Conv3d(in_ch, out_ch, 1)
         self.conv   = ConvBlock(out_ch * 2, out_ch)
 
-    def forward(self, x, skip):
+    def forward(self, x, skip, film=None):
         x = self.reduce(x)
         x = torch.cat([x, skip], dim=1)
-        return self.conv(x, film=None)  # decoder is NOT FiLMed
+        return self.conv(x, film=film)
 
 
 # ============================================================
-# FiLM U-Net (encoder-only FiLM, selectable simple/complex)
+# FiLM U-Net (full FiLM: encoder + bottleneck + decoder)
 # ============================================================
 
 class FiLMUNet3D(nn.Module):
     """
-    Encoder-only FiLM 3D U-Net.
+    Full FiLM 3D U-Net — conditioning applied to encoder, bottleneck, and decoder.
     If use_simple=True:  FiLM-Si scalars per block ([B,1]).
     If use_simple=False: complex per-channel FiLM ([B,C_block]).
+
+    Conditioned blocks (10 total):
+      Encoder:     e1, e2, e3, e4        channels: [B, 2B, 4B, 8B]
+      Bottleneck:  b1, b2                channels: [16B, 16B]
+      Decoder:     u4, u3, u2, u1        channels: [8B, 4B, 2B, B]
 
     GPU split mirrors the baseline UNet3D:
       GPU 0 — encoder + bottleneck + heavy decoder (u4, u3)
       GPU 1 — light decoder (u2, u1) + output conv
-    This avoids transferring large intermediate feature maps (d4, d3)
-    across the bus and keeps the bottleneck spike on the same device
-    as the heavy decoder that consumes it.
     """
-    def __init__(self, in_ch=1, out_ch=1, base=32, cond_dim=6, use_simple: bool = True):
+    def __init__(self, in_ch=1, out_ch=1, base=32, cond_dim=3, use_simple: bool = False):
         super().__init__()
         self.use_simple = use_simple
         self.dev0 = torch.device("cuda:0")
@@ -211,18 +219,26 @@ class FiLMUNet3D(nn.Module):
         self.out = nn.Conv3d(base, out_ch, 1).to(self.dev1)
 
         # --- FiLM generator (GPU 0) ---
+        # Block order: enc(e1,e2,e3,e4) + bott(b1,b2) + dec(u4,u3,u2,u1) = 10 blocks
+        enc_channels  = [base, base * 2, base * 4, base * 8]
+        bott_channels = [base * 16, base * 16]
+        dec_channels  = [base * 8, base * 4, base * 2, base]
+        all_channels  = enc_channels + bott_channels + dec_channels  # 10 blocks
+
         if use_simple:
             self.film_gen = FiLMSimpleGenerator(
-                cond_dim=cond_dim, n_blocks=4, hidden=128
+                cond_dim=cond_dim, n_blocks=len(all_channels), hidden=64
             ).to(self.dev0)
         else:
-            enc_channels = [base, base * 2, base * 4, base * 8]
             self.film_gen = FiLMComplexGenerator(
-                cond_dim=cond_dim, enc_channels=enc_channels, hidden=128
+                cond_dim=cond_dim, all_channels=all_channels, hidden=64
             ).to(self.dev0)
 
     def forward(self, x, cond):
-        films = self.film_gen(cond.to(self.dev0))  # list of (gamma, beta) per encoder block
+        films = self.film_gen(cond.to(self.dev0))
+        # films[0..3]  → encoder  (e1, e2, e3, e4)
+        # films[4..5]  → bottleneck (b1, b2)
+        # films[6..9]  → decoder  (u4, u3, u2, u1)
 
         # --- Encoder + bottleneck + heavy decoder on GPU 0 ---
         x  = x.to(self.dev0)
@@ -231,16 +247,18 @@ class FiLMUNet3D(nn.Module):
         s3, x3 = self.e3(x2, film=films[2])
         s4, x4 = self.e4(x3, film=films[3])
 
-        b  = self.b2(self.b1(x4, film=None), film=None)
-        d4 = self.u4(b,  s4)
-        d3 = self.u3(d4, s3)
+        b  = self.b2(self.b1(x4, film=films[4]), film=films[5])
+        d4 = self.u4(b,  s4, film=films[6])
+        d3 = self.u3(d4, s3, film=films[7])
 
         # --- Move only the light-decoder inputs to GPU 1 ---
         d3 = d3.to(self.dev1)
         s2 = s2.to(self.dev1)
         s1 = s1.to(self.dev1)
+        f8 = (films[8][0].to(self.dev1), films[8][1].to(self.dev1))
+        f9 = (films[9][0].to(self.dev1), films[9][1].to(self.dev1))
 
         # --- Light decoder on GPU 1 ---
-        d2 = self.u2(d3, s2)
-        d1 = self.u1(d2, s1)
+        d2 = self.u2(d3, s2, film=f8)
+        d1 = self.u1(d2, s1, film=f9)
         return self.out(d1)

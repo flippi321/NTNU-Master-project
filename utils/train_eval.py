@@ -188,6 +188,7 @@ def fit_feature_based_3D(
     dataConverter: DataConverter = DataConverter(),
     metadataLoader: MetaDataLoader = MetaDataLoader(),
     optimizer=None,
+    scheduler=None,
     snapshot_every: int = None,
     checkpoint_every: int = 100,
     crop_axes: list[tuple, tuple] = None,
@@ -233,7 +234,7 @@ def fit_feature_based_3D(
             continue
 
         # Get feature vector and forward
-        cond = metadataLoader.get(x_path, sex=True, age_hunt3=True)
+        cond = metadataLoader.get(x_path, sex=True, age_hunt3=True, age_hunt4=True)
         cond = torch.tensor(cond, dtype=x.dtype).unsqueeze(0).to(device)
 
         optimizer.zero_grad(set_to_none=True)
@@ -254,8 +255,12 @@ def fit_feature_based_3D(
         loss_history.append(capped_loss)
 
         scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
+        if scheduler is not None:
+            scheduler.step()
 
         # --- Save Snapshot ---
         if snapshot_every and (i % snapshot_every == 0 or i == 0 or i == epochs - 1):
@@ -294,8 +299,8 @@ def fit_feature_based_3D(
                         val_x = dataConverter.get_volume_with_3d_change(tensor=val_x, crop_axes=crop_axes, remove_mode=True)
                         val_y = dataConverter.get_volume_with_3d_change(tensor=val_y, crop_axes=crop_axes, remove_mode=True)
 
-                        vcond = metadataLoader.get(vx_path, sex=True, age_hunt3=True)
-                        vcond = torch.tensor(vcond, dtype=val_x.dtype).unsqueeze(0).to(device)
+                    vcond = metadataLoader.get(vx_path, sex=True, age_hunt3=True, age_hunt4=True)
+                    vcond = torch.tensor(vcond, dtype=val_x.dtype).unsqueeze(0).to(device)
 
                     with torch.autocast(enabled=device_gpu_available, device_type=device.type):
                         vout = model(val_x, vcond)
