@@ -62,25 +62,31 @@ class Out(nn.Module):
 class ResidualUNet3D(nn.Module):
     def __init__(self, in_ch=1, out_ch=1, base=32):
         super().__init__()
-        # --- Encoder ---
-        self.e1 = ConvBlock(in_ch, base)
-        self.d2 = Down(base, base * 2)
-        self.d3 = Down(base * 2, base * 4)
-        self.d4 = Down(base * 4, base * 8)
+        self.dev0 = torch.device("cuda:0")
+        self.dev1 = torch.device("cuda:1")
 
-        # --- Bottleneck ---
-        self.bott = ConvBlock(base * 8, base * 16)
-        self.bott_sec = ConvBlock(base * 16, base * 16)
+        # --- Encoder (GPU 0) ---
+        self.e1 = ConvBlock(in_ch, base).to(self.dev0)
+        self.d2 = Down(base, base * 2).to(self.dev0)
+        self.d3 = Down(base * 2, base * 4).to(self.dev0)
+        self.d4 = Down(base * 4, base * 8).to(self.dev0)
 
-        # --- Decoder ---
-        self.u4 = Up(base * 16, base * 8)
-        self.u3 = Up(base * 8, base * 4)
-        self.u2 = Up(base * 4, base * 2)
-        self.u1 = Out(base * 2, base)  # last layer: no upsample
+        # --- Bottleneck (GPU 0) ---
+        self.bott = ConvBlock(base * 8, base * 16).to(self.dev0)
+        self.bott_sec = ConvBlock(base * 16, base * 16).to(self.dev0)
 
-        self.out = nn.Conv3d(base, out_ch, kernel_size=1)
+        # --- Heavy decoder layers (GPU 0) ---
+        self.u4 = Up(base * 16, base * 8).to(self.dev0)
+        self.u3 = Up(base * 8, base * 4).to(self.dev0)
 
+        # --- Light decoder layers (GPU 1) ---
+        self.u2 = Up(base * 4, base * 2).to(self.dev1)
+        self.u1 = Out(base * 2, base).to(self.dev1)  # last layer: no upsample
+
+        self.out = nn.Conv3d(base, out_ch, kernel_size=1).to(self.dev1)
     def forward(self, x):
+        # --- Encoder + bottleneck + heavy decoder on GPU 0 ---
+        x = x.to(self.dev0)
         s1 = self.e1(x)
 
         s2, x2 = self.d2(s1)
@@ -91,8 +97,14 @@ class ResidualUNet3D(nn.Module):
 
         d4 = self.u4(b, s4)
         d3 = self.u3(d4, s3)
+
+        # --- Move to GPU 1 for light decoder ---
+        d3 = d3.to(self.dev1)
+        s2 = s2.to(self.dev1)
+        s1 = s1.to(self.dev1)
+
+        # --- Light decoder on GPU 1 ---
         d2 = self.u2(d3, s2)
         d1 = self.u1(d2, s1)
-
         delta = self.out(d1)
-        return x + delta, delta
+        return x.to(self.dev1) + delta, delta
