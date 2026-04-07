@@ -8,3 +8,5 @@ scikit-learn==1.7.2
 pandas==2.3.3
 pytorch-msssim==1.0.0
 tqdm==4.67.1
+yacs>=0.1.8
+h5py
