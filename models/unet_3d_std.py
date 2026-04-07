@@ -66,35 +66,46 @@ class UNet3D(nn.Module):
     """
     def __init__(self, in_ch=1, out_ch=1, base=32):
         super().__init__()
-        # --- Encoder ---
-        self.e1 = ConvBlock(in_ch, base)
-        self.e2 = Down(base, base * 2)
-        self.e3 = Down(base * 2, base * 4)
-        self.e4 = Down(base * 4, base * 8)
+        self.dev0 = torch.device("cuda:0")
+        self.dev1 = torch.device("cuda:1")
 
-        # --- Bottleneck ---
-        self.bott = ConvBlock(base * 8, base * 16)
-        self.bott_sec = ConvBlock(base * 16, base * 16)
+        # --- Encoder (GPU 0) ---
+        self.e1 = ConvBlock(in_ch, base).to(self.dev0)
+        self.e2 = Down(base, base * 2).to(self.dev0)
+        self.e3 = Down(base * 2, base * 4).to(self.dev0)
+        self.e4 = Down(base * 4, base * 8).to(self.dev0)
 
-        # --- Decoder ---
-        self.u4 = Up(base * 16, base * 8)
-        self.u3 = Up(base * 8, base * 4)
-        self.u2 = Up(base * 4, base * 2)
-        self.u1 = Out(base * 2, base)   # On the last layer don't upsample
+        # --- Bottleneck (GPU 0) ---
+        self.bott = ConvBlock(base * 8, base * 16).to(self.dev0)
+        self.bott_sec = ConvBlock(base * 16, base * 16).to(self.dev0)
 
-        self.out = nn.Conv3d(base, out_ch, kernel_size=1)
+        # --- Heavy decoder layers (GPU 0) ---
+        self.u4 = Up(base * 16, base * 8).to(self.dev0)
+        self.u3 = Up(base * 8, base * 4).to(self.dev0)
+
+        # --- Light decoder layers (GPU 1) ---
+        self.u2 = Up(base * 4, base * 2).to(self.dev1)
+        self.u1 = Out(base * 2, base).to(self.dev1)
+        self.out = nn.Conv3d(base, out_ch, kernel_size=1).to(self.dev1)
 
     def forward(self, x):
+        # --- Encoder + bottleneck + heavy decoder on GPU 0 ---
+        x = x.to(self.dev0)
         s1 = self.e1(x)
         s2, x2 = self.e2(s1)
         s3, x3 = self.e3(x2)
         s4, x4 = self.e4(x3)
+        b   = self.bott_sec(self.bott(x4))
+        d4  = self.u4(b, s4)
+        d3  = self.u3(d4, s3)
 
-        b = self.bott_sec(self.bott(x4))
+        # --- Move to GPU 1 for light decoder ---
+        d3  = d3.to(self.dev1)
+        s2  = s2.to(self.dev1)
+        s1  = s1.to(self.dev1)
 
-        d4 = self.u4(b, s4)
-        d3 = self.u3(d4, s3)
-        d2 = self.u2(d3, s2)
-        d1 = self.u1(d2, s1)
-        
+        # --- Light decoder on GPU 1 ---
+        d2  = self.u2(d3, s2)
+        d1  = self.u1(d2, s1)
+
         return self.out(d1)

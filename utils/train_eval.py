@@ -2,10 +2,9 @@ import os
 import torch
 import random
 import numpy as np
-import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from utils.data_converter import DataConverter
+from utils.metadata_loader import MetaDataLoader
 from tqdm import tqdm
 import copy
 
@@ -71,7 +70,7 @@ def fit_3D(
     best_model = copy.deepcopy(model)
     model.train()
 
-    prog_bar = tqdm(range(epochs), desc="Training 3D Residual U-Net")
+    prog_bar = tqdm(range(epochs), desc="Training 3D U-Net")
 
     for i in prog_bar:
         # pick a random pair volume
@@ -94,7 +93,6 @@ def fit_3D(
             print(f"Warning: unequal dimentions in training pair for patient {patient_id} (D: {x.shape[2]} vs {y.shape[2]}, H: {x.shape[3]} vs {y.shape[3]}, W: {x.shape[4]} vs {y.shape[4]}). Skipped pair...")
             continue
 
-        # forward
         out = model(x)
 
         # Res unet returns delta as well, we only need the recon
@@ -119,7 +117,10 @@ def fit_3D(
         if snapshot_every and (i % snapshot_every == 0 or i == 0 or i == epochs - 1):
             # Add padding for the exported
             if crop_axes is not None:
-                y_hat_padded = dataConverter.get_volume_with_3d_change(tensor=y_hat, crop_axes=crop_axes, remove_mode=False)
+                # Move y_hat back to cpu/device for padding op
+                y_hat_padded = dataConverter.get_volume_with_3d_change(
+                    tensor=y_hat.to(device), crop_axes=crop_axes, remove_mode=False
+                )
             else:
                 y_hat_padded = y_hat
             
@@ -145,14 +146,9 @@ def fit_3D(
                         if crop_axes is not None:
                             val_x = dataConverter.get_volume_with_3d_change(tensor=val_x, crop_axes=crop_axes, remove_mode=True)
                             val_y = dataConverter.get_volume_with_3d_change(tensor=val_y, crop_axes=crop_axes, remove_mode=True)
-                        else:
-                            val_x, val_y = val_x, val_y
 
                         vout = model(val_x)
-                        if isinstance(vout, (tuple, list)) and len(vout) >= 2:
-                            vy_hat, _ = vout[0], vout[1]
-                        else:
-                            vy_hat, _ = vout, None
+                        vy_hat = vout[0] if isinstance(vout, (tuple, list)) else vout
 
                         vloss = None
                         try:
@@ -190,11 +186,12 @@ def fit_feature_based_3D(
     epochs=1000,
     loss_func=None,
     dataConverter: DataConverter = DataConverter(),
+    metadataLoader: MetaDataLoader = MetaDataLoader(),
     optimizer=None,
+    scheduler=None,
     snapshot_every: int = None,
     checkpoint_every: int = 100,
     crop_axes: list[tuple, tuple] = None,
-    feature_usage_list: list[bool] = None,
 ):
     """
     Train a 3D model on full volumes using HuntDataLoader.
@@ -206,14 +203,12 @@ def fit_feature_based_3D(
     
     # Set up values
     optimizer = optimizer or build_optimizer(model)
-    scaler = torch.GradScaler(enabled=(device.type == "cuda"), device=device)
+    device_gpu_available = device.type == "cuda" or device.type == "cuda:0" or device.type == "cuda:1"
+    scaler = torch.GradScaler(enabled=device_gpu_available, device=device)
     saved_snapshots, loss_history = [], []
     best_val_loss = np.inf
     best_model = copy.deepcopy(model)
     model.train()
-
-    # Ensure feature_usage_list is set
-    feature_usage_list = feature_usage_list or [False]*6
 
     prog_bar = tqdm(range(epochs), desc="Training 3D Residual U-Net")
 
@@ -239,10 +234,12 @@ def fit_feature_based_3D(
             continue
 
         # Get feature vector and forward
-        cond = dataConverter.get_patient_feature_vector(x_path, usage_list=feature_usage_list).to(device=device, dtype=x.dtype)
+        cond = metadataLoader.get(x_path, sex=True, age_hunt3=True, age_hunt4=True)
+        cond = torch.tensor(cond, dtype=x.dtype).unsqueeze(0).to(device)
+
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.autocast(enabled=(device.type == "cuda"), device_type=device.type):
+        with torch.autocast(enabled=device_gpu_available, device_type=device.type):
             out = model(x, cond)
 
             # Res unet returns delta as well, we only need the recon
@@ -258,8 +255,12 @@ def fit_feature_based_3D(
         loss_history.append(capped_loss)
 
         scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
+        if scheduler is not None:
+            scheduler.step()
 
         # --- Save Snapshot ---
         if snapshot_every and (i % snapshot_every == 0 or i == 0 or i == epochs - 1):
@@ -280,7 +281,7 @@ def fit_feature_based_3D(
 
         # free ASAP
         del x_full, y_full, x, y, cond, out, y_hat, crit_out, loss
-        if device.type == "cuda":
+        if device_gpu_available:
             torch.cuda.synchronize()
 
         # --- Validation ---
@@ -298,9 +299,10 @@ def fit_feature_based_3D(
                         val_x = dataConverter.get_volume_with_3d_change(tensor=val_x, crop_axes=crop_axes, remove_mode=True)
                         val_y = dataConverter.get_volume_with_3d_change(tensor=val_y, crop_axes=crop_axes, remove_mode=True)
 
-                    vcond = dataConverter.get_patient_feature_vector(vx_path, usage_list=feature_usage_list).to(device=device, dtype=val_x.dtype)
+                    vcond = metadataLoader.get(vx_path, sex=True, age_hunt3=True, age_hunt4=True)
+                    vcond = torch.tensor(vcond, dtype=val_x.dtype).unsqueeze(0).to(device)
 
-                    with torch.autocast(enabled=(device.type == "cuda"), device_type=device.type):
+                    with torch.autocast(enabled=device_gpu_available, device_type=device.type):
                         vout = model(val_x, vcond)
                         vy_hat = vout[0] if isinstance(vout, (tuple, list)) else vout
                         vcrit_out = loss_func(vy_hat, val_y)
