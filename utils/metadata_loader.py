@@ -2,10 +2,22 @@ import os
 import pandas as pd
 
 class MetaDataLoader:
-    def __init__(self, root_path="data/metadata"):
+    def __init__(self, root_path="data/metadata", external_features=False):
+        """
+        Parameters
+        ----------
+        root_path : str
+            Directory containing HUNT3.csv, HUNT4.xlsx, and (optionally)
+            mock_metadata_normalized.csv.
+        external_features : bool
+            If True, load and merge mock_metadata_normalized.csv so that
+            external feature columns are available via get(). Default False.
+        """
         self.data_root = root_path
+        self._use_external = external_features
         self._combined = None
         self._index = {}
+        self._external_cols = []
 
     def _get_id_from_path(self, path: str) -> str:
         filename = os.path.basename(path)
@@ -36,6 +48,14 @@ class MetaDataLoader:
         self._combined["age_hunt3"] = (self._combined["age_hunt3"] - self._combined["age_hunt3"].min()) / (self._combined["age_hunt3"].max() - self._combined["age_hunt3"].min())
         self._combined["age_hunt4"] = (self._combined["age_hunt4"] - self._combined["age_hunt4"].min()) / (self._combined["age_hunt4"].max() - self._combined["age_hunt4"].min())
 
+        # Optionally merge normalised external features
+        if self._use_external:
+            ext_path = os.path.join(self.data_root, "mock_metadata_normalized.csv")
+            ext = pd.read_csv(ext_path)
+            ext = ext.rename(columns={"MR_HUNT_ID": "hunt_3_long_id"})
+            self._external_cols = [c for c in ext.columns if c != "hunt_3_long_id"]
+            self._combined = self._combined.merge(ext, on="hunt_3_long_id", how="left")
+
         # Build O(1) lookup index
         self._index = self._combined.set_index("hunt_id").to_dict(orient="index")
 
@@ -51,6 +71,9 @@ class MetaDataLoader:
         if sex:       result["sex"]        = row["sex"]
         if age_hunt3: result["age_hunt3"]  = row["age_hunt3"]
         if age_hunt4: result["age_hunt4"]  = row["age_hunt4"]
+        if self._use_external:
+            for col in self._external_cols:
+                result[col] = row.get(col)
         return result if labeled else list(result.values())
 
     def get_many(self, hunt_paths, long_id=False, sex=False, age_hunt3=False, age_hunt4=False):
