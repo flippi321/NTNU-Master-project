@@ -129,7 +129,7 @@ class MetaDataLoader:
         val_split : float
             Fraction for validation (default 0.15). Test gets the remainder.
         seed : int
-            Random seed (default 42).
+            Random seed (default 69).
 
         Returns
         -------
@@ -151,48 +151,65 @@ class MetaDataLoader:
         label_matrix = label_matrix[order]
 
         proportions = np.array([train_split, val_split, 1.0 - train_split - val_split])
-        n_splits = 3
 
-        # Desired positive-example counts per label per subset
-        desired = np.outer(proportions, label_matrix.sum(axis=0))  # (3, L)
+        # Desired positive-example counts per label per subset (c^i_j in the paper)
+        desired_per_label = np.outer(proportions, label_matrix.sum(axis=0))  # (3, L)
 
-        # Remaining capacity per subset (float for smooth tie-breaking)
+        # Desired total examples per subset (c_j in the paper)
         split_budget = (n * proportions).astype(float)
 
         assignments = np.full(n, -1, dtype=int)
-        remaining = list(range(n))
+        unassigned = set(range(n))
 
-        while remaining:
-            rem = np.array(remaining)
+        while unassigned:
+            rem = np.array(list(unassigned))
+
+            # Count remaining examples per label among unassigned participants
             label_sums = label_matrix[rem].sum(axis=0)  # (L,)
             present = np.where(label_sums > 0)[0]
 
             if len(present) == 0:
-                # All remaining participants have no labels — distribute by budget
-                for idx in remaining:
+                # No label evidence left — distribute remaining by subset budget
+                for idx in rem:
                     k = int(np.argmax(split_budget))
                     assignments[idx] = k
                     split_budget[k] -= 1
                 break
 
-            # Rarest label: lowest total desired across all subsets
-            desired_totals = desired[:, present].sum(axis=0)
-            rarest_j = present[int(np.argmin(desired_totals))]
+            # --- Algorithm 1, line 14 ---
+            # Rarest label: fewest remaining examples among unassigned, random tie-break
+            counts_present = label_sums[present]
+            min_count = counts_present.min()
+            tied = present[counts_present == min_count]
+            rarest_j = int(rng.choice(tied))
 
-            # First participant (already shuffled) that carries this label
-            candidates_with_label = rem[label_matrix[rem, rarest_j] == 1]
-            chosen = int(candidates_with_label[0])
+            # --- Algorithm 1, lines 15–33 ---
+            # Iterate over ALL unassigned examples carrying the rarest label
+            carriers = rem[label_matrix[rem, rarest_j] == 1]
+            for chosen in carriers:
+                chosen = int(chosen)
 
-            # Assign to the subset that needs this label most
-            k = int(np.argmax(desired[:, rarest_j]))
-            assignments[chosen] = k
+                # Subset(s) with largest desired count for this label
+                label_desires = desired_per_label[:, rarest_j]
+                max_label_desire = label_desires.max()
+                top_subsets = np.where(label_desires == max_label_desire)[0]
 
-            # Update desired and budget
-            desired[k] -= label_matrix[chosen]
-            desired = np.maximum(desired, 0)
-            split_budget[k] -= 1
+                if len(top_subsets) == 1:
+                    k = int(top_subsets[0])
+                else:
+                    # Tie-break by largest overall budget, then randomly
+                    budgets = split_budget[top_subsets]
+                    max_budget = budgets.max()
+                    top2 = top_subsets[budgets == max_budget]
+                    k = int(rng.choice(top2))
 
-            remaining.remove(chosen)
+                assignments[chosen] = k
+                unassigned.remove(chosen)
+
+                # Update desired counts for all labels this example carries
+                desired_per_label[k] -= label_matrix[chosen]
+                desired_per_label = np.maximum(desired_per_label, 0)
+                split_budget[k] -= 1
 
         train_ids = hunt_ids[assignments == 0].tolist()
         val_ids   = hunt_ids[assignments == 1].tolist()
