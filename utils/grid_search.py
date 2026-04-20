@@ -190,11 +190,16 @@ def run_pipeline(
             optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd, betas=betas)
             scheduler = _build_scheduler(optimizer, sched_type, epochs)
             _, loss_history, _, best_model, best_val_loss = fit_3D(
-                model=model, device=device,
-                training_pairs=train_pairs, validation_pairs=val_pairs,
-                epochs=epochs, loss_func=ssim_l1_loss,
-                optimizer=optimizer, scheduler=scheduler,
-                crop_axes=CROP_AXES, checkpoint_every=checkpoint_every,
+                model=model, 
+                device=device,
+                training_pairs=train_pairs, 
+                validation_pairs=val_pairs,
+                epochs=epochs, 
+                loss_func=ssim_l1_loss,
+                optimizer=optimizer, 
+                scheduler=scheduler,
+                crop_axes=CROP_AXES, 
+                checkpoint_every=checkpoint_every,
             )
 
         else:  # film
@@ -206,12 +211,17 @@ def run_pipeline(
             optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd, betas=betas)
             scheduler = _build_scheduler(optimizer, sched_type, epochs)
             _, loss_history, _, best_model, best_val_loss = fit_feature_based_3D(
-                model=model, device=device,
-                training_pairs=train_pairs, validation_pairs=val_pairs,
-                epochs=epochs, loss_func=ssim_l1_loss,
+                model=model,
+                device=device,
+                training_pairs=train_pairs,
+                validation_pairs=val_pairs,
+                epochs=epochs,
+                loss_func=ssim_l1_loss,
                 metadataLoader=_CombinedCondAdapter(_combined_loader),
-                optimizer=optimizer, scheduler=scheduler,
-                crop_axes=CROP_AXES, checkpoint_every=checkpoint_every,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                crop_axes=CROP_AXES,
+                checkpoint_every=checkpoint_every,
             )
 
         model_path = os.path.join(out_dir, f"{run_id}_best.pth")
