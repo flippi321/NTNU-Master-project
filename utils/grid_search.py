@@ -243,6 +243,36 @@ def run_pipeline(
     return trained_count
 
 
+def get_champion_entries(grid_file: str) -> dict[str, dict]:
+    """
+    Return the whole entry for the best completed model of each type.
+
+    Returns
+    -------
+    dict mapping type key ('std', 'film_simple', 'film_complex') -> entry dict
+    """
+    with open(grid_file) as f:
+        config = yaml.safe_load(f)
+
+    grid = config["grid"]
+
+    def _type_key(entry: dict) -> str:
+        if entry["model_type"] == "std":
+            return "std"
+        return f"film_{entry.get('film_generator_type', 'unknown')}"
+
+    best: dict[str, dict] = {}
+    for entry in grid:
+        results = entry.get("results", {})
+        if not results.get("completed", False):
+            continue
+        key = _type_key(entry)
+        val_loss = float(results["best_val_loss"])
+        if key not in best or val_loss < float(best[key]["results"]["best_val_loss"]):
+            best[key] = entry
+
+    return best
+
 def select_champions(
     grid_file: str,
     device: torch.device,
