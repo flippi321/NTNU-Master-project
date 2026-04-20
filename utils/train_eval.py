@@ -3,7 +3,7 @@ import random
 import numpy as np
 import torch.optim as optim
 from utils.data_converter import DataConverter
-from utils.metadata_loader import MetaDataLoader
+from utils.health_data_loader import HealthDataLoader
 from tqdm import tqdm
 import copy
 
@@ -118,7 +118,8 @@ def fit_3D(
         loss_history.append(capped_loss)
 
         # --- Save Snapshot ---
-        if snapshot_every and (i % snapshot_every == 0 or i == 0 or i == epochs - 1):
+        if snapshot_every and i > 0 and (i % snapshot_every == 0 or i == epochs - 1):
+
             # Add padding for the exported
             if crop_axes is not None:
                 # Move y_hat back to cpu/device for padding op
@@ -197,7 +198,7 @@ def fit_feature_based_3D(
     epochs=1000,
     loss_func=None,
     dataConverter: DataConverter = DataConverter(),
-    metadataLoader: MetaDataLoader = MetaDataLoader(),
+    healthDataLoader: HealthDataLoader = HealthDataLoader(),
     optimizer=None,
     scheduler=None,
     snapshot_every: int = None,
@@ -249,7 +250,7 @@ def fit_feature_based_3D(
             continue
 
         # Get feature vector and forward
-        cond = metadataLoader.get(x_path, sex=True, age_hunt3=True, age_hunt4=True)
+        cond = healthDataLoader.get(x_path, sex=True, age_hunt3=True, age_hunt4=True)
         cond = torch.tensor(cond, dtype=x.dtype).unsqueeze(0).to(data_device)
 
         optimizer.zero_grad(set_to_none=True)
@@ -278,7 +279,7 @@ def fit_feature_based_3D(
             scheduler.step()
 
         # --- Save Snapshot ---
-        if snapshot_every and (i % snapshot_every == 0 or i == 0 or i == epochs - 1):
+        if snapshot_every and i > 0 and (i % snapshot_every == 0 or i == epochs - 1):
             # Add padding for the exported
             with torch.no_grad():
                 if crop_axes is not None:
@@ -314,7 +315,7 @@ def fit_feature_based_3D(
                         val_x = dataConverter.get_volume_with_3d_change(tensor=val_x, crop_axes=crop_axes, remove_mode=True)
                         val_y = dataConverter.get_volume_with_3d_change(tensor=val_y, crop_axes=crop_axes, remove_mode=True)
 
-                    vcond = metadataLoader.get(vx_path, sex=True, age_hunt3=True, age_hunt4=True)
+                    vcond = healthDataLoader.get(vx_path, sex=True, age_hunt3=True, age_hunt4=True)
                     vcond = torch.tensor(vcond, dtype=val_x.dtype).unsqueeze(0).to(data_device)
 
                     with torch.autocast(enabled=device_gpu_available, device_type=device.type):

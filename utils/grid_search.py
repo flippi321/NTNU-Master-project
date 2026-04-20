@@ -217,7 +217,7 @@ def run_pipeline(
                 validation_pairs=val_pairs,
                 epochs=epochs,
                 loss_func=ssim_l1_loss,
-                metadataLoader=_CombinedCondAdapter(_combined_loader),
+                healthDataLoader=_CombinedCondAdapter(_combined_loader),
                 optimizer=optimizer,
                 scheduler=scheduler,
                 crop_axes=CROP_AXES,
