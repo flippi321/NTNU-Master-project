@@ -174,6 +174,7 @@ def run_pipeline(
               f"lr={lr}  wd={wd}  betas={betas}  sched={sched_type}  "
               f"mlp={entry.get('mlp_hidden')}  epochs={epochs}  base={base_channels}")
 
+        # Baseline non-feature aware Model
         if entry["model_type"] == "std":
             model = _build_model(entry, base_channels=base_channels)
             optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd, betas=betas)
@@ -191,7 +192,8 @@ def run_pipeline(
                 checkpoint_every=checkpoint_every,
             )
 
-        else:  # film
+        # Feature-aware Model with CombinedMetadataLoader
+        else: 
             if _combined_loader is None:
                 _combined_loader = CombinedMetadataLoader(
                     csv_path=os.path.join(metadata_root, "metadata_combined.csv")
