@@ -1,4 +1,3 @@
-import os
 import torch
 import random
 import numpy as np
@@ -32,7 +31,7 @@ def get_middle_slice_3D(volume: torch.Tensor | np.ndarray):
         t = volume.detach().cpu()
     else:
         t = torch.tensor(volume)
-    _, _, D, H, W = t.shape
+    _, _, _, _, W = t.shape
     mid = W // 2
     sl = t[0, 0, :, :, mid]
     return sl.clamp(0, 1).numpy()
@@ -181,7 +180,8 @@ def fit_3D(
                     else:
                         scheduler.step()
 
-    return model, loss_history, saved_snapshots, best_model
+    return model, loss_history, saved_snapshots, best_model, best_val_loss
+
 
 
 
@@ -338,4 +338,4 @@ def fit_feature_based_3D(
             if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(avg_loss)
 
-    return model, loss_history, saved_snapshots, best_model
+    return model, loss_history, saved_snapshots, best_model, best_val_loss
