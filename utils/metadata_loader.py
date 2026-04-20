@@ -277,7 +277,7 @@ class MetaDataLoader:
         rows_missing_mock = int(combined[mock_feat_cols].isna().any(axis=1).sum())
         combined[feat_cols] = combined[feat_cols].fillna(0)
 
-        combined = combined[["hunt_id", "mr_hunt_id"] + feat_cols]
+        combined = combined[["hunt_id"] + feat_cols]
         combined.to_csv(output_path, index=False)
 
         print(f"[combine_metadata] {len(combined)} rows, {len(combined.columns)} cols → {output_path}")
