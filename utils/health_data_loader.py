@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 
-class MetaDataLoader:
+class HealthDataLoader:
     def __init__(self, root_path="data/metadata", external_features=False):
         """
         Parameters
