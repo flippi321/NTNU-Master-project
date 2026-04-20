@@ -193,7 +193,7 @@ class FiLMUNet3D(nn.Module):
       GPU 0 — encoder + bottleneck + heavy decoder (u4, u3)
       GPU 1 — light decoder (u2, u1) + output conv
     """
-    def __init__(self, in_ch=1, out_ch=1, base=32, cond_dim=3, use_simple: bool = False):
+    def __init__(self, in_ch=1, out_ch=1, base=32, cond_dim=3, use_simple: bool = False, mlp_hidden: int = 64):
         super().__init__()
         self.use_simple = use_simple
         self.dev0 = torch.device("cuda:0")
@@ -227,11 +227,11 @@ class FiLMUNet3D(nn.Module):
 
         if use_simple:
             self.film_gen = FiLMSimpleGenerator(
-                cond_dim=cond_dim, n_blocks=len(all_channels), hidden=64
+                cond_dim=cond_dim, n_blocks=len(all_channels), hidden=mlp_hidden
             ).to(self.dev0)
         else:
             self.film_gen = FiLMComplexGenerator(
-                cond_dim=cond_dim, all_channels=all_channels, hidden=64
+                cond_dim=cond_dim, all_channels=all_channels, hidden=mlp_hidden
             ).to(self.dev0)
 
     def forward(self, x, cond):
