@@ -51,6 +51,7 @@ def fit_3D(
     loss_func=None,
     dataConverter: DataConverter = DataConverter(),
     optimizer=None,
+    scheduler=None,
     snapshot_every: int = None,
     checkpoint_every: int = 100,
     crop_axes: list[tuple, tuple] = None,
@@ -63,6 +64,10 @@ def fit_3D(
     - Snapshots show the mid-axial slice (H,W) for input, target, and recon.
     """
     
+    # Models that self-manage GPU placement expose dev0 as their input device.
+    # Always load data there rather than using the caller-supplied `device`.
+    data_device = getattr(model, 'dev0', device)
+
     # Set up values
     optimizer = optimizer or build_optimizer(model)
     saved_snapshots, loss_history = [], []
@@ -78,8 +83,8 @@ def fit_3D(
         x_path, y_path = training_pairs[patient_id][0], training_pairs[patient_id][1]
 
         # Load full volumes as tensors
-        x_full = dataConverter.load_path_as_tensor(x_path, device)
-        y_full = dataConverter.load_path_as_tensor(y_path, device)
+        x_full = dataConverter.load_path_as_tensor(x_path, data_device)
+        y_full = dataConverter.load_path_as_tensor(y_path, data_device)
 
         # Crop if specified
         if crop_axes is not None:
@@ -140,8 +145,8 @@ def fit_3D(
 
                 with torch.no_grad():
                     for vx_path, vy_path in validation_pairs:
-                        val_x = dataConverter.load_path_as_tensor(vx_path, device)
-                        val_y = dataConverter.load_path_as_tensor(vy_path, device)
+                        val_x = dataConverter.load_path_as_tensor(vx_path, data_device)
+                        val_y = dataConverter.load_path_as_tensor(vy_path, data_device)
 
                         if crop_axes is not None:
                             val_x = dataConverter.get_volume_with_3d_change(tensor=val_x, crop_axes=crop_axes, remove_mode=True)
@@ -169,6 +174,12 @@ def fit_3D(
 
                 # Restore training mode after validation
                 model.train()
+
+                if scheduler is not None:
+                    if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                        scheduler.step(avg_loss)
+                    else:
+                        scheduler.step()
 
     return model, loss_history, saved_snapshots, best_model
 
@@ -201,6 +212,10 @@ def fit_feature_based_3D(
     - Snapshots show the mid-axial slice (H,W) for input, target, and recon.
     """
     
+    # Models that self-manage GPU placement expose dev0 as their input device.
+    # Always load data there rather than using the caller-supplied `device`.
+    data_device = getattr(model, 'dev0', device)
+
     # Set up values
     optimizer = optimizer or build_optimizer(model)
     device_gpu_available = device.type == "cuda" or device.type == "cuda:0" or device.type == "cuda:1"
@@ -218,8 +233,8 @@ def fit_feature_based_3D(
         x_path, y_path = training_pairs[patient_id]
 
         # Load full volumes as tensors
-        x_full = dataConverter.load_path_as_tensor(x_path, device)
-        y_full = dataConverter.load_path_as_tensor(y_path, device)
+        x_full = dataConverter.load_path_as_tensor(x_path, data_device)
+        y_full = dataConverter.load_path_as_tensor(y_path, data_device)
 
         # Crop if specified
         if crop_axes is not None:
@@ -235,7 +250,7 @@ def fit_feature_based_3D(
 
         # Get feature vector and forward
         cond = metadataLoader.get(x_path, sex=True, age_hunt3=True, age_hunt4=True)
-        cond = torch.tensor(cond, dtype=x.dtype).unsqueeze(0).to(device)
+        cond = torch.tensor(cond, dtype=x.dtype).unsqueeze(0).to(data_device)
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -259,7 +274,7 @@ def fit_feature_based_3D(
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
-        if scheduler is not None:
+        if scheduler is not None and not isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             scheduler.step()
 
         # --- Save Snapshot ---
@@ -292,15 +307,15 @@ def fit_feature_based_3D(
 
             with torch.no_grad():
                 for vx_path, vy_path in validation_pairs:
-                    val_x = dataConverter.load_path_as_tensor(vx_path, device)
-                    val_y = dataConverter.load_path_as_tensor(vy_path, device)
+                    val_x = dataConverter.load_path_as_tensor(vx_path, data_device)
+                    val_y = dataConverter.load_path_as_tensor(vy_path, data_device)
 
                     if crop_axes is not None:
                         val_x = dataConverter.get_volume_with_3d_change(tensor=val_x, crop_axes=crop_axes, remove_mode=True)
                         val_y = dataConverter.get_volume_with_3d_change(tensor=val_y, crop_axes=crop_axes, remove_mode=True)
 
                     vcond = metadataLoader.get(vx_path, sex=True, age_hunt3=True, age_hunt4=True)
-                    vcond = torch.tensor(vcond, dtype=val_x.dtype).unsqueeze(0).to(device)
+                    vcond = torch.tensor(vcond, dtype=val_x.dtype).unsqueeze(0).to(data_device)
 
                     with torch.autocast(enabled=device_gpu_available, device_type=device.type):
                         vout = model(val_x, vcond)
@@ -319,5 +334,8 @@ def fit_feature_based_3D(
 
             # Restore training mode after validation
             model.train()
+
+            if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(avg_loss)
 
     return model, loss_history, saved_snapshots, best_model
