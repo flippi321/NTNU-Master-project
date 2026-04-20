@@ -272,6 +272,7 @@ class MetaDataLoader:
         # Subjects only in mock lack a hunt_id — derive it from mr_hunt_id
         derived_ids = combined["mr_hunt_id"].apply(lambda x: str(int(x))[-5:].zfill(5))
         combined["hunt_id"] = combined["hunt_id"].where(combined["hunt_id"].notna(), derived_ids)
+        combined["hunt_id"] = combined["hunt_id"].apply(lambda x: str(int(float(x)))[-5:].zfill(5))
 
         rows_missing_fastsurfer = int(combined[fastsurfer_feat_cols].isna().any(axis=1).sum())
         rows_missing_mock = int(combined[mock_feat_cols].isna().any(axis=1).sum())
