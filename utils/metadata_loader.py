@@ -249,3 +249,43 @@ class MetaDataLoader:
 
     def get_many(self, hunt_paths, long_id=False, sex=False, age_hunt3=False, age_hunt4=False):
         return [self.get(hpath, long_id=long_id, sex=sex, age_hunt3=age_hunt3, age_hunt4=age_hunt4) for hpath in hunt_paths]
+    
+    def combine_metadata(
+        self,
+        fastsurfer_path: str = "data/metadata/fastsurfer_aggregated_normalized.csv",
+        mock_metadata_path: str = "data/metadata/mock_metadata_normalized.csv",
+        output_path: str = "data/metadata/metadata_combined.csv",
+    ) -> pd.DataFrame:
+        fastsurfer = pd.read_csv(fastsurfer_path)
+        mock = pd.read_csv(mock_metadata_path)
+
+        fastsurfer["mr_hunt_id"] = fastsurfer["mr_hunt_id"].astype(np.int64)
+        mock = mock.rename(columns={"MR_HUNT_ID": "mr_hunt_id"})
+        mock["mr_hunt_id"] = mock["mr_hunt_id"].astype(np.int64)
+
+        fastsurfer_feat_cols = [c for c in fastsurfer.columns if c not in ("hunt_id", "mr_hunt_id")]
+        mock_feat_cols = [c for c in mock.columns if c != "mr_hunt_id"]
+        feat_cols = fastsurfer_feat_cols + mock_feat_cols
+
+        combined = fastsurfer.merge(mock, on="mr_hunt_id", how="outer")
+
+        # Subjects only in mock lack a hunt_id — derive it from mr_hunt_id
+        derived_ids = combined["mr_hunt_id"].apply(lambda x: str(int(x))[-5:].zfill(5))
+        combined["hunt_id"] = combined["hunt_id"].where(combined["hunt_id"].notna(), derived_ids)
+
+        rows_missing_fastsurfer = int(combined[fastsurfer_feat_cols].isna().any(axis=1).sum())
+        rows_missing_mock = int(combined[mock_feat_cols].isna().any(axis=1).sum())
+        combined[feat_cols] = combined[feat_cols].fillna(0)
+
+        combined = combined[["hunt_id", "mr_hunt_id"] + feat_cols]
+        combined.to_csv(output_path, index=False)
+
+        print(f"[combine_metadata] {len(combined)} rows, {len(combined.columns)} cols → {output_path}")
+        if rows_missing_fastsurfer:
+            print(f"  {rows_missing_fastsurfer} row(s) missing fastsurfer — filled with 0")
+        if rows_missing_mock:
+            print(f"  {rows_missing_mock} row(s) missing mock_metadata — filled with 0")
+        if not rows_missing_fastsurfer and not rows_missing_mock:
+            print("  All rows matched — no gap-filling needed.")
+
+        return combined
