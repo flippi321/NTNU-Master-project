@@ -241,3 +241,67 @@ def run_pipeline(
         print(f"\n[pipeline] Finished. Trained {trained_count} model(s).")
 
     return trained_count
+
+
+def select_champions(
+    grid_file: str,
+    device: torch.device,
+    metadata_root: str = "data/metadata",
+) -> dict[str, torch.nn.Module]:
+    """
+    Return the best-performing completed model of each type.
+
+    Reads the grid YAML, groups completed entries by their type key
+    ('std', 'film_simple', 'film_complex'), picks the one with the lowest
+    best_val_loss per group, rebuilds the architecture, and loads the weights.
+
+    Returns
+    -------
+    dict mapping type key -> model (eval mode, on `device`)
+    """
+    with open(grid_file) as f:
+        config = yaml.safe_load(f)
+
+    yaml_params   = config.get("params", {})
+    base_channels = int(yaml_params["base_channels"])
+    grid          = config["grid"]
+
+    def _type_key(entry: dict) -> str:
+        if entry["model_type"] == "std":
+            return "std"
+        return f"film_{entry.get('film_generator_type', 'unknown')}"
+
+    best: dict[str, dict] = {}
+    for entry in grid:
+        results = entry.get("results", {})
+        if not results.get("completed", False):
+            continue
+        key = _type_key(entry)
+        val_loss = float(results["best_val_loss"])
+        if key not in best or val_loss < float(best[key]["results"]["best_val_loss"]):
+            best[key] = entry
+
+    if not best:
+        print("[select_champions] No completed entries found.")
+        return {}
+
+    _combined_loader: CombinedMetadataLoader | None = None
+    champions: dict[str, torch.nn.Module] = {}
+
+    for key, entry in best.items():
+        model_path = entry["results"]["model_path"]
+        if entry["model_type"] == "film":
+            if _combined_loader is None:
+                _combined_loader = CombinedMetadataLoader(
+                    csv_path=os.path.join(metadata_root, "metadata_combined.csv")
+                )
+            model = _build_model(entry, base_channels=base_channels, cond_dim=_combined_loader.n_features)
+        else:
+            model = _build_model(entry, base_channels=base_channels)
+
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.to(device).eval()
+        champions[key] = model
+        print(f"[select_champions] {key}: {entry['id']}  val_loss={entry['results']['best_val_loss']:.6f}  ← {model_path}")
+
+    return champions
