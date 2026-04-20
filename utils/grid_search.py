@@ -8,9 +8,7 @@ import torch.optim as optim
 import yaml
 
 from utils.combined_metadata_loader import CombinedMetadataLoader
-from utils.data_loader import DataLoader
 from utils.loss_functions import ssim_l1_loss
-from utils.metadata_loader import MetaDataLoader
 from utils.train_eval import fit_3D, fit_feature_based_3D
 
 MODEL_REGISTRY = {
@@ -162,7 +160,8 @@ def refresh_grid(grid_file: str, params: dict | None = None) -> None:
 def run_pipeline(
     grid_file: str,
     device: torch.device,
-    data_root: str = "data",
+    train_pairs: list[tuple[str, str]],
+    val_pairs: list[tuple[str, str]],
     metadata_root: str = "data/metadata",
     out_dir: str = "out/grid_search",
     model_filter: str | None = None,
@@ -177,6 +176,7 @@ def run_pipeline(
         Path to grid_search.yaml.
     device : torch.device
         Torch device to train on.
+    training_pairs, validation_pairs, test_pairs : list of (x_path, y_path) tuples.
     model_filter : str | None
         Restrict to a model type: None (all), 'std', 'film', 'film_simple', 'film_complex'.
     stop_after_first : bool
@@ -191,18 +191,10 @@ def run_pipeline(
     with open(grid_file) as f:
         config = yaml.safe_load(f)
 
-    params = {**_HYPERPARAM_GRID, **config.get("params", {})}
-    epochs       = int(params["epochs"])
+    params        = {**_HYPERPARAM_GRID, **config.get("params", {})}
+    epochs        = int(params["epochs"])
     base_channels = int(params["base_channels"])
-    grid         = config["grid"]
-
-    # Stratified split — consistent across all runs
-    data_loader = DataLoader(root_path=data_root)
-    available_ids = set(data_loader.all_candidates)
-    split_loader  = MetaDataLoader(root_path=metadata_root, external_features=True)
-    train_ids, val_ids, _ = split_loader.split(train_split=0.70, val_split=0.15, seed=69)
-    train_pairs = [data_loader.get_pair_path_from_id(i) for i in train_ids if i in available_ids]
-    val_pairs   = [data_loader.get_pair_path_from_id(i) for i in val_ids   if i in available_ids]
+    grid          = config["grid"]
 
     _combined_loader: CombinedMetadataLoader | None = None
     trained_count = 0
