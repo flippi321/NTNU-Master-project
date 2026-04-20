@@ -16,16 +16,6 @@ MODEL_REGISTRY = {
     "film": ("models.unet_3d_film", "FiLMUNet3D"),
 }
 
-_HYPERPARAM_GRID = {
-    "epochs":        4000,
-    "base_channels": 32,
-    "lrs":           [5e-5, 1e-4],
-    "weight_decays": [1e-5, 1e-4],
-    "betas":         [[0.9, 0.999], [0.9, 0.95]],
-    "schedulers":    ["cosine", "plateau"],
-    "mlp_hiddens":   [64, 128],
-}
-
 CROP_AXES = ((16, 10, 0), (17, 11, 17))
 
 
@@ -78,83 +68,58 @@ def _build_scheduler(optimizer, scheduler_type: str, epochs: int):
     raise ValueError(f"Unknown lr_scheduler: {scheduler_type!r}")
 
 
-def _generate_entries(params: dict) -> list[dict]:
-    lrs   = params["lrs"]
-    wds   = params["weight_decays"]
-    betas = params["betas"]
-    scheds = params["schedulers"]
-    mlps  = params["mlp_hiddens"]
-    entries = []
-
-    n = 1
-    for lr, wd, b, sched in itertools.product(lrs, wds, betas, scheds):
-        entries.append({
-            "id": f"std_{n:03d}", "model_type": "std",
-            "learning_rate": lr, "weight_decay": wd,
-            "betas": list(b), "lr_scheduler": sched,
-        })
-        n += 1
-
-    n = 1
-    for lr, wd, b, sched, mlp in itertools.product(lrs, wds, betas, scheds, mlps):
-        entries.append({
-            "id": f"film_simple_{n:03d}", "model_type": "film",
-            "film_generator_type": "simple", "mlp_hidden": mlp,
-            "learning_rate": lr, "weight_decay": wd,
-            "betas": list(b), "lr_scheduler": sched,
-        })
-        n += 1
-
-    n = 1
-    for lr, wd, b, sched, mlp in itertools.product(lrs, wds, betas, scheds, mlps):
-        entries.append({
-            "id": f"film_complex_{n:03d}", "model_type": "film",
-            "film_generator_type": "complex", "mlp_hidden": mlp,
-            "learning_rate": lr, "weight_decay": wd,
-            "betas": list(b), "lr_scheduler": sched,
-        })
-        n += 1
-
-    return entries
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def refresh_grid(grid_file: str, params: dict | None = None) -> None:
-    """
-    Create or safely refresh grid_search.yaml.
-
-    - New file: writes _HYPERPARAM_GRID (merged with caller-supplied params) and a fresh grid.
-    - Existing file: reads params from the file (caller-supplied params take precedence),
-      regenerates all entries, and restores 'results' for any previously completed entry.
-    """
-    existing_results: dict[str, dict] = {}
-
+def create_hyperparameter_grid(
+    grid_file: str,
+    epochs: int = 4000,
+    base_channels: int = 32,
+    lrs: list = [5e-5, 1e-4],
+    weight_decays: list = [1e-5, 1e-4],
+    betas: list = [[0.9, 0.999], [0.9, 0.95]],
+    schedulers: list = ["cosine", "plateau"],
+    mlp_hiddens: list = [64, 128],
+) -> None:
+    """Create grid_search.yaml. Does nothing if the file already exists."""
     if os.path.exists(grid_file):
-        with open(grid_file) as f:
-            old = yaml.safe_load(f) or {}
-        merged = {**_HYPERPARAM_GRID, **old.get("params", {}), **(params or {})}
-        for entry in old.get("grid", []):
-            if entry.get("results", {}).get("completed"):
-                existing_results[entry["id"]] = entry["results"]
-    else:
-        merged = {**_HYPERPARAM_GRID, **(params or {})}
+        print(f"[create_hyperparameter_grid] {grid_file} already exists — skipping.")
+        return
 
-    entries = _generate_entries(merged)
-    for entry in entries:
-        if entry["id"] in existing_results:
-            entry["results"] = existing_results[entry["id"]]
+    params = dict(epochs=epochs, base_channels=base_channels, lrs=lrs,
+                  weight_decays=weight_decays, betas=betas,
+                  schedulers=schedulers, mlp_hiddens=mlp_hiddens)
+    entries = []
+
+    n = 1
+    for lr, wd, b, sched in itertools.product(lrs, weight_decays, betas, schedulers):
+        entries.append({"id": f"std_{n:03d}", "model_type": "std",
+                        "learning_rate": lr, "weight_decay": wd,
+                        "betas": list(b), "lr_scheduler": sched})
+        n += 1
+
+    n = 1
+    for lr, wd, b, sched, mlp in itertools.product(lrs, weight_decays, betas, schedulers, mlp_hiddens):
+        entries.append({"id": f"film_simple_{n:03d}", "model_type": "film",
+                        "film_generator_type": "simple", "mlp_hidden": mlp,
+                        "learning_rate": lr, "weight_decay": wd,
+                        "betas": list(b), "lr_scheduler": sched})
+        n += 1
+
+    n = 1
+    for lr, wd, b, sched, mlp in itertools.product(lrs, weight_decays, betas, schedulers, mlp_hiddens):
+        entries.append({"id": f"film_complex_{n:03d}", "model_type": "film",
+                        "film_generator_type": "complex", "mlp_hidden": mlp,
+                        "learning_rate": lr, "weight_decay": wd,
+                        "betas": list(b), "lr_scheduler": sched})
+        n += 1
 
     os.makedirs(os.path.dirname(grid_file) or ".", exist_ok=True)
     with open(grid_file, "w") as f:
-        yaml.dump({"params": merged, "grid": entries}, f,
+        yaml.dump({"params": params, "grid": entries}, f,
                   default_flow_style=False, sort_keys=False, allow_unicode=True)
-
-    total = len(entries)
-    done  = len(existing_results)
-    print(f"[refresh_grid] {total} entries → {grid_file}  ({done} completed preserved)")
+    print(f"[create_hyperparameter_grid] Created {grid_file} with {len(entries)} entries.")
 
 
 def run_pipeline(
@@ -162,6 +127,7 @@ def run_pipeline(
     device: torch.device,
     train_pairs: list[tuple[str, str]],
     val_pairs: list[tuple[str, str]],
+    checkpoint_every: int = 250,
     metadata_root: str = "data/metadata",
     out_dir: str = "out/grid_search",
     model_filter: str | None = None,
@@ -176,7 +142,7 @@ def run_pipeline(
         Path to grid_search.yaml.
     device : torch.device
         Torch device to train on.
-    training_pairs, validation_pairs, test_pairs : list of (x_path, y_path) tuples.
+    train_pairs, val_pairs : list of (x_path, y_path) tuples.
     model_filter : str | None
         Restrict to a model type: None (all), 'std', 'film', 'film_simple', 'film_complex'.
     stop_after_first : bool
@@ -191,9 +157,9 @@ def run_pipeline(
     with open(grid_file) as f:
         config = yaml.safe_load(f)
 
-    params        = {**_HYPERPARAM_GRID, **config.get("params", {})}
-    epochs        = int(params["epochs"])
-    base_channels = int(params["base_channels"])
+    yaml_params   = config.get("params", {})
+    epochs        = int(yaml_params["epochs"])
+    base_channels = int(yaml_params["base_channels"])
     grid          = config["grid"]
 
     _combined_loader: CombinedMetadataLoader | None = None
@@ -213,7 +179,6 @@ def run_pipeline(
         wd       = float(entry["weight_decay"])
         betas    = (float(entry["betas"][0]), float(entry["betas"][1]))
         sched_type = entry["lr_scheduler"]
-        checkpoint_every = max(1, epochs // 40)
 
         print(f"\n[pipeline] Starting {run_id}")
         print(f"  type={entry['model_type']}  film_type={entry.get('film_generator_type')}  "
