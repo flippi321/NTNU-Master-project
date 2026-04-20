@@ -329,8 +329,10 @@ def select_champions(
         else:
             model = _build_model(entry, base_channels=base_channels)
 
-        model.load_state_dict(torch.load(model_path, map_location=device))
-        model.to(device).eval()
+        # Load weights via CPU so each submodule receives data at its own device
+        # (encoder → cuda:0, decoder → cuda:1) without consolidating to one GPU.
+        model.load_state_dict(torch.load(model_path, map_location='cpu'))
+        model.eval()
         champions[key] = model
         print(f"[select_champions] {key}: {entry['id']}  val_loss={entry['results']['best_val_loss']:.6f}  ← {model_path}")
 
