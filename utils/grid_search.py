@@ -23,17 +23,6 @@ CROP_AXES = ((16, 10, 0), (17, 11, 17))
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-class _CombinedCondAdapter:
-    """Wraps CombinedMetadataLoader to match the get() signature fit_feature_based_3D expects."""
-
-    def __init__(self, loader: CombinedMetadataLoader):
-        self._loader = loader
-
-    def get(self, hunt_path: str, **kwargs) -> list:
-        result = self._loader.get(hunt_path)
-        return result.tolist() if result is not None else [0.0] * self._loader.n_features
-
-
 def _matches_filter(entry: dict, model_filter: str | None) -> bool:
     if model_filter is None:
         return True
@@ -217,7 +206,7 @@ def run_pipeline(
                 validation_pairs=val_pairs,
                 epochs=epochs,
                 loss_func=ssim_l1_loss,
-                healthDataLoader=_CombinedCondAdapter(_combined_loader),
+                metadata_loader=_combined_loader,
                 optimizer=optimizer,
                 scheduler=scheduler,
                 crop_axes=CROP_AXES,

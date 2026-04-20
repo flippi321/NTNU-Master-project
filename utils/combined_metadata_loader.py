@@ -76,20 +76,6 @@ class CombinedMetadataLoader:
             rows.append(result if result is not None else np.zeros(self.n_features, dtype=np.float32))
         return np.stack(rows)
 
-    # Match the MetaDataLoader.get() signature so this class can be used as a
-    # drop-in where fit_feature_based_3D expects a metadataLoader object.
-    # Keyword arguments (sex, age_hunt3, …) are intentionally ignored — all
-    # combined features are returned regardless.
-    def get_as_loader(self, hunt_path: str, **kwargs) -> list:
-        """
-        Adapter method matching the MetaDataLoader.get() call signature used
-        inside fit_feature_based_3D. Returns all combined features as a list.
-        """
-        result = self.get(hunt_path)
-        if result is None:
-            return [0.0] * self.n_features
-        return result.tolist()
-
     @property
     def feature_names(self) -> list[str]:
         self._load()

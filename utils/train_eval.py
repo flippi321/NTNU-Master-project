@@ -3,7 +3,7 @@ import random
 import numpy as np
 import torch.optim as optim
 from utils.data_converter import DataConverter
-from utils.health_data_loader import HealthDataLoader
+from utils.combined_metadata_loader import CombinedMetadataLoader
 from tqdm import tqdm
 import copy
 
@@ -36,6 +36,12 @@ def get_middle_slice_3D(volume: torch.Tensor | np.ndarray):
     sl = t[0, 0, :, :, mid]
     return sl.clamp(0, 1).numpy()
 
+def get_metadata_features(loader: CombinedMetadataLoader, path: str) -> torch.Tensor:
+    features = loader.get(path)
+    if features is None:
+        features = np.zeros(loader.n_features, dtype=np.float32)
+        print(f"Warning: no metadata features found for {path}, using zeros.")
+    return torch.tensor(features, dtype=torch.float32)
 
 # ---------------------------------------------
 # 3D Training Loop
@@ -198,7 +204,7 @@ def fit_feature_based_3D(
     epochs=1000,
     loss_func=None,
     dataConverter: DataConverter = DataConverter(),
-    healthDataLoader: HealthDataLoader = HealthDataLoader(),
+    metadata_loader: CombinedMetadataLoader = CombinedMetadataLoader(),
     optimizer=None,
     scheduler=None,
     snapshot_every: int = None,
@@ -249,9 +255,7 @@ def fit_feature_based_3D(
             print(f"Warning: unequal dimentions in training pair for patient {patient_id} (D: {x.shape[2]} vs {y.shape[2]}, H: {x.shape[3]} vs {y.shape[3]}, W: {x.shape[4]} vs {y.shape[4]}). Skipped pair...")
             continue
 
-        # Get feature vector and forward
-        cond = healthDataLoader.get(x_path, sex=True, age_hunt3=True, age_hunt4=True)
-        cond = torch.tensor(cond, dtype=x.dtype).unsqueeze(0).to(data_device)
+        cond = get_metadata_features(metadata_loader, x_path).unsqueeze(0).to(data_device)
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -315,8 +319,7 @@ def fit_feature_based_3D(
                         val_x = dataConverter.get_volume_with_3d_change(tensor=val_x, crop_axes=crop_axes, remove_mode=True)
                         val_y = dataConverter.get_volume_with_3d_change(tensor=val_y, crop_axes=crop_axes, remove_mode=True)
 
-                    vcond = healthDataLoader.get(vx_path, sex=True, age_hunt3=True, age_hunt4=True)
-                    vcond = torch.tensor(vcond, dtype=val_x.dtype).unsqueeze(0).to(data_device)
+                    vcond = get_metadata_features(metadata_loader, vx_path).unsqueeze(0).to(data_device)
 
                     with torch.autocast(enabled=device_gpu_available, device_type=device.type):
                         vout = model(val_x, vcond)
