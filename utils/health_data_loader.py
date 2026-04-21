@@ -255,6 +255,7 @@ class HealthDataLoader:
         fastsurfer_path: str = "data/metadata/fastsurfer_aggregated_normalized.csv",
         mock_metadata_path: str = "data/metadata/mock_metadata_normalized.csv",
         output_path: str = "data/metadata/metadata_combined.csv",
+        show_missing_ids: bool = False,
     ) -> pd.DataFrame:
         fastsurfer = pd.read_csv(fastsurfer_path)
         mock = pd.read_csv(mock_metadata_path)
@@ -274,7 +275,8 @@ class HealthDataLoader:
         combined["hunt_id"] = combined["hunt_id"].where(combined["hunt_id"].notna(), derived_ids)
         combined["hunt_id"] = combined["hunt_id"].apply(lambda x: str(int(float(x)))[-5:].zfill(5))
 
-        rows_missing_fastsurfer = int(combined[fastsurfer_feat_cols].isna().any(axis=1).sum())
+        missing_fastsurfer_mask = combined[fastsurfer_feat_cols].isna().any(axis=1)
+        rows_missing_fastsurfer = int(missing_fastsurfer_mask.sum())
         rows_missing_mock = int(combined[mock_feat_cols].isna().any(axis=1).sum())
         combined[feat_cols] = combined[feat_cols].fillna(0)
 
@@ -284,6 +286,9 @@ class HealthDataLoader:
         print(f"[combine_metadata] {len(combined)} rows, {len(combined.columns)} cols → {output_path}")
         if rows_missing_fastsurfer:
             print(f"  {rows_missing_fastsurfer} row(s) missing fastsurfer — filled with 0")
+            if show_missing_ids:
+                missing_ids = combined.loc[missing_fastsurfer_mask, "hunt_id"].tolist()
+                print(f"  Missing fastsurfer IDs: {missing_ids}")
         if rows_missing_mock:
             print(f"  {rows_missing_mock} row(s) missing mock_metadata — filled with 0")
         if not rows_missing_fastsurfer and not rows_missing_mock:
