@@ -52,7 +52,7 @@ def fit_3D(
     device: torch.device,
     training_pairs: list[tuple[str, str]],
     validation_pairs: list[tuple[str, str]],
-    epochs=1000,
+    epochs=2000,
     loss_func=None,
     dataConverter: DataConverter = DataConverter(),
     optimizer=None,
@@ -201,7 +201,7 @@ def fit_feature_based_3D(
     device: torch.device,
     training_pairs: list[tuple[str, str]],
     validation_pairs: list[tuple[str, str]],
-    epochs=1000,
+    epochs=2000,
     loss_func=None,
     dataConverter: DataConverter = DataConverter(),
     metadata_loader: CombinedMetadataLoader = CombinedMetadataLoader(),
@@ -210,6 +210,7 @@ def fit_feature_based_3D(
     snapshot_every: int = None,
     checkpoint_every: int = 100,
     crop_axes: list[tuple, tuple] = None,
+    hide_progress: bool = False,
 ):
     """
     Train a 3D model on full volumes using HuntDataLoader.
@@ -232,7 +233,8 @@ def fit_feature_based_3D(
     best_model = copy.deepcopy(model)
     model.train()
 
-    prog_bar = tqdm(range(epochs), desc="Training 3D Residual U-Net")
+    # Use tqdm for progress bar, but disable if hide_progress is True
+    prog_bar = tqdm(range(epochs), desc="Training 3D U-Net with Features", disable=hide_progress)
 
     for i in prog_bar:
         # pick a random pair volume
@@ -330,9 +332,14 @@ def fit_feature_based_3D(
                     val_losses.append(float(vloss.item()))
                     del val_x, val_y, vcond, vout, vy_hat, vcrit_out, vloss
 
+            if device_gpu_available:
+                torch.cuda.empty_cache()
             avg_loss = float(np.mean(val_losses)) if val_losses else np.inf
             if avg_loss < best_val_loss:
-                prog_bar.set_postfix_str(f"Best loss on val {avg_loss:.6f}, (Iter {i})")
+                if not hide_progress:
+                    prog_bar.set_postfix_str(f"Best loss on val {avg_loss:.6f}, (Iter {i})")
+                else:
+                    print(f"Best loss on val {avg_loss:.6f}, (Iter {i})")
                 best_val_loss = avg_loss
                 best_model = copy.deepcopy(model)
 
