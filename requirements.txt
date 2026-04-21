@@ -10,3 +10,4 @@ pytorch-msssim==1.0.0
 tqdm==4.67.1
 yacs>=0.1.8
 h5py
+optuna>=3.0

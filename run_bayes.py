@@ -1,0 +1,110 @@
+"""
+Run Bayesian hyperparameter optimization using Optuna TPE.
+
+Each session runs up to --n_trials trials. The SQLite database and YAML
+audit log persist between sessions, so you can stop and resume at any time.
+
+Usage:
+    python run_bayes.py                                      # all types, 20 trials
+    python run_bayes.py --model_filter std                   # only std models
+    python run_bayes.py --model_filter film_simple           # only film_simple
+    python run_bayes.py --model_filter film_complex          # only film_complex
+    python run_bayes.py --n_trials 5                         # 5 new trials this session
+    python run_bayes.py --stop_after_first                   # 1 trial then exit
+    python run_bayes.py --setup                              # env/data check only
+"""
+
+import argparse
+import os
+import sys
+
+import torch
+
+from utils.bayes_search import init_yaml, run_bayes
+from utils.data_loader import DataLoader
+from utils.metadata_loader import HealthDataLoader
+
+YAML_FILE     = "data/bayes_search.yaml"
+DB_PATH       = "data/bayes_search.db"
+DATA_ROOT     = "data"
+METADATA_ROOT = "data/metadata"
+OUT_DIR       = "out/bayes_search"
+
+
+def setup_check():
+    print("=== Setup check ===")
+
+    if torch.cuda.is_available():
+        print(f"  CUDA: {torch.cuda.get_device_name(0)}")
+    else:
+        print("  WARNING: CUDA not available — training will run on CPU (slow).")
+
+    for split in ("HUNT3", "HUNT4"):
+        path = os.path.join(DATA_ROOT, split)
+        if not os.path.isdir(path):
+            print(f"  ERROR: {path} not found.")
+            sys.exit(1)
+        print(f"  {path}: {len(os.listdir(path))} subjects")
+
+    print(f"  YAML file: {YAML_FILE}")
+    print(f"  DB file:   {DB_PATH}")
+    print(f"  Output dir: {OUT_DIR}")
+    print("=== Setup OK ===\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run Bayesian hyperparameter optimization."
+    )
+    parser.add_argument(
+        "--model_filter", type=str, default=None,
+        choices=["std", "film_simple", "film_complex"],
+        help="Restrict to one model type (default: all, round-robin)",
+    )
+    parser.add_argument(
+        "--n_trials", type=int, default=20,
+        help="Total new trials to run this session across active model types (default: 20)",
+    )
+    parser.add_argument(
+        "--stop_after_first", action="store_true",
+        help="Run exactly one trial then exit",
+    )
+    parser.add_argument(
+        "--setup", action="store_true",
+        help="Run environment/data checks and exit without training",
+    )
+    args = parser.parse_args()
+
+    if args.setup:
+        setup_check()
+        return
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    init_yaml(YAML_FILE, epochs=4000, base_channels=32)
+
+    data_loader   = DataLoader(root_path=DATA_ROOT)
+    available_ids = set(data_loader.all_candidates)
+    split_loader  = HealthDataLoader(root_path=METADATA_ROOT, external_features=True)
+    train_ids, val_ids, _ = split_loader.split(train_split=0.70, val_split=0.15, seed=69)
+    train_pairs = [data_loader.get_pair_path_from_id(i) for i in train_ids if i in available_ids]
+    val_pairs   = [data_loader.get_pair_path_from_id(i) for i in val_ids   if i in available_ids]
+    print(f"Train: {len(train_pairs)}  Val: {len(val_pairs)}\n")
+
+    run_bayes(
+        yaml_file=YAML_FILE,
+        db_path=DB_PATH,
+        device=device,
+        train_pairs=train_pairs,
+        val_pairs=val_pairs,
+        n_trials=args.n_trials,
+        metadata_root=METADATA_ROOT,
+        out_dir=OUT_DIR,
+        model_filter=args.model_filter,
+        stop_after_first=args.stop_after_first,
+    )
+
+
+if __name__ == "__main__":
+    main()
