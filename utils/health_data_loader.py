@@ -47,7 +47,7 @@ class HealthDataLoader:
 
         self._combined = hunt4.merge(hunt3[["hunt_3_long_id", "age_hunt3"]], on="hunt_3_long_id", how="inner")
 
-        self._combined["hunt_id"] = self._combined["hunt_3_long_id"].apply(lambda x: str(int(x))[-5:])
+        self._combined["hunt_id"] = self._combined["hunt4_id"].astype(str).str.zfill(5)
         self._combined["sex"] = self._combined["sex"].map({"M": 0, "F": 1})
         self._combined["age_hunt3"] = (self._combined["age_hunt3"] - self._combined["age_hunt3"].min()) / (self._combined["age_hunt3"].max() - self._combined["age_hunt3"].min())
         self._combined["age_hunt4"] = (self._combined["age_hunt4"] - self._combined["age_hunt4"].min()) / (self._combined["age_hunt4"].max() - self._combined["age_hunt4"].min())

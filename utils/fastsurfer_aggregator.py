@@ -58,18 +58,33 @@ class FastSurferAggregator:
     aggregation are dropped and reported.
     """
 
-    def __init__(self, smri_dir: str = "data/metadata/hdd/sMRI"):
+    def __init__(self, smri_dir: str = "data/metadata/hdd/sMRI", hunt4_path: str = "data/metadata/HUNT4.xlsx"):
         self.smri_dir = smri_dir
+        self.hunt4_path = hunt4_path
         self._df: pd.DataFrame | None = None
+        self._id_map: dict | None = None  # mr_hunt_id (int) → hunt_id (str)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
+    def _load_id_map(self):
+        if self._id_map is not None:
+            return
+        hunt4 = pd.read_excel(self.hunt4_path)
+        hunt4 = hunt4.rename(columns={
+            "HUNT4 MRI Participant number": "hunt_id",
+            "Long HUNT3 numbers": "mr_hunt_id",
+        })
+        hunt4 = hunt4.dropna(subset=["mr_hunt_id"])
+        hunt4["mr_hunt_id"] = hunt4["mr_hunt_id"].astype(np.int64)
+        hunt4["hunt_id"] = hunt4["hunt_id"].astype(str).str.zfill(5)
+        self._id_map = hunt4.set_index("mr_hunt_id")["hunt_id"].to_dict()
+
     def load(self, valid_ids: set | None = None, force: bool = False) -> pd.DataFrame:
         """
         Parse all ``*_all.csv`` files and return a tidy DataFrame indexed
-        by ``hunt_id`` (last 5 digits of the MR_HUNT_ID).
+        by ``hunt_id`` (HUNT4 MRI Participant number from HUNT4.xlsx).
 
         Parameters
         ----------
@@ -84,6 +99,7 @@ class FastSurferAggregator:
         if self._df is not None and not force:
             return self._df
 
+        self._load_id_map()
         files = sorted(glob.glob(os.path.join(self.smri_dir, "*.csv")))
         if not files:
             raise FileNotFoundError(f"No CSV files found in {self.smri_dir!r}")
@@ -96,7 +112,7 @@ class FastSurferAggregator:
             print(f"ID filter: {len(files)}/{files_before} files match "
                   f"the {len(valid_ids)} provided IDs.")
 
-        rows = [self._process_file(f) for f in files]
+        rows = [r for f in files if (r := self._process_file(f)) is not None]
         df = pd.DataFrame(rows).set_index("hunt_id")
 
         before = len(df)
@@ -155,12 +171,15 @@ class FastSurferAggregator:
         df = df.apply(pd.to_numeric, errors="coerce")
 
         row = df.iloc[0]
-        subj_id = str(int(row["SubjID"]))
-        hunt_id = subj_id[-5:]
+        subj_id = int(row["SubjID"])
+        hunt_id = self._id_map.get(subj_id)
+        if hunt_id is None:
+            print(f"Warning: mr_hunt_id {subj_id} not found in HUNT4.xlsx — skipping")
+            return None
 
         result = {
             "hunt_id":    hunt_id,
-            "mr_hunt_id": subj_id,
+            "mr_hunt_id": str(subj_id),
             "wmh_volume": row["subcort_vol-WM-hypointensities"],
         }
 
