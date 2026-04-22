@@ -85,3 +85,28 @@ class CombinedMetadataLoader:
     def n_features(self) -> int:
         self._load()
         return int(self._features.shape[1])
+
+
+class SubsetCombinedMetadataLoader:
+    """
+    Thin wrapper around CombinedMetadataLoader that exposes only a chosen
+    subset of features. Drop-in replacement wherever CombinedMetadataLoader
+    is accepted (same .get() / .n_features / .feature_names interface).
+    """
+
+    def __init__(self, base: CombinedMetadataLoader, indices: list[int]):
+        self._base    = base
+        self._indices = np.array(indices, dtype=int)
+
+    def get(self, hunt_id_or_path: str) -> np.ndarray | None:
+        full = self._base.get(hunt_id_or_path)
+        return full[self._indices] if full is not None else None
+
+    @property
+    def n_features(self) -> int:
+        return len(self._indices)
+
+    @property
+    def feature_names(self) -> list[str]:
+        names = self._base.feature_names
+        return [names[i] for i in self._indices]

@@ -155,14 +155,25 @@ class FastSurferAggregator:
 
         row = df.iloc[0]
         subj_id = int(row["SubjID"])
+
+        # SubjID is either a long_id (13-digit, original sMRI files)
+        # or already a short_id (5-digit, generated files)
         hunt_id = hih.long_to_short(subj_id)
-        if hunt_id is None:
-            print(f"Warning: mr_hunt_id {subj_id} not found in HUNT4.xlsx — skipping")
-            return None
+        if hunt_id is not None:
+            mr_hunt_id = str(subj_id)
+        else:
+            short_candidate = str(subj_id).zfill(5)
+            long_lookup = hih.short_to_long(short_candidate)
+            if long_lookup is not None:
+                hunt_id = short_candidate
+                mr_hunt_id = str(long_lookup)
+            else:
+                print(f"Warning: SubjID {subj_id} not found in HUNT4.xlsx — skipping")
+                return None
 
         result = {
             "hunt_id":    hunt_id,
-            "mr_hunt_id": str(subj_id),
+            "mr_hunt_id": mr_hunt_id,
             "wmh_volume": row["subcort_vol-WM-hypointensities"],
         }
 
