@@ -3,14 +3,14 @@ import numpy as np
 import pandas as pd
 
 
-class CombinedMetadataLoader:
+class CombinedMetadataUtils:
     """
     Merges normalized health and FastSurfer metadata into a single CSV, then
     exposes it as a contiguous float32 array for fast per-subject lookups.
 
     Typical usage
     -------------
-    loader = CombinedMetadataLoader(health_root="data/metadata",
+    loader = CombinedMetadataUtil(health_root="data/metadata",
                                     fastsurfer_root="data/metadata/hdd/sMRI")
     loader.combine()          # merge + save + load into memory
     vec = loader.get("00039") # O(1) numpy row
@@ -71,6 +71,57 @@ class CombinedMetadataLoader:
         self._build_arrays(merged)
         return self.output_path
 
+    def check_overlap(
+        self,
+        health_data_path: str = "data/metadata/processed/health_data_normalized.csv",
+        fastsurfer_data_path: str = "data/metadata/processed/fastsurfer_data_normalized.csv",
+    ) -> dict:
+        """
+        Compare the hunt_ids present in each source file and report coverage.
+
+        Parameters
+        ----------
+        health_data_path : str
+            Path to the normalized health data CSV.
+        fastsurfer_data_path : str
+            Path to the normalized FastSurfer data CSV.
+
+        Returns
+        -------
+        dict with keys:
+            ``n_health``          – subjects in health data
+            ``n_fastsurfer``      – subjects in FastSurfer data
+            ``n_overlap``         – subjects present in both
+            ``n_health_only``     – subjects in health data but not FastSurfer
+            ``n_fastsurfer_only`` – subjects in FastSurfer but not health data
+            ``health_only``       – sorted list of hunt_ids exclusive to health data
+            ``fastsurfer_only``   – sorted list of hunt_ids exclusive to FastSurfer
+        """
+        health_ids      = set(pd.read_csv(health_data_path,     usecols=["hunt_id"])["hunt_id"].astype(str).str.zfill(5))
+        fastsurfer_ids  = set(pd.read_csv(fastsurfer_data_path, usecols=["hunt_id"])["hunt_id"].astype(str).str.zfill(5))
+
+        overlap         = health_ids & fastsurfer_ids
+        health_only     = sorted(health_ids    - fastsurfer_ids)
+        fastsurfer_only = sorted(fastsurfer_ids - health_ids)
+
+        result = {
+            "n_health":          len(health_ids),
+            "n_fastsurfer":      len(fastsurfer_ids),
+            "n_overlap":         len(overlap),
+            "n_health_only":     len(health_only),
+            "n_fastsurfer_only": len(fastsurfer_only),
+            "health_only":       health_only,
+            "fastsurfer_only":   fastsurfer_only,
+        }
+
+        print(f"Health data:      {result['n_health']} subjects")
+        print(f"FastSurfer data:  {result['n_fastsurfer']} subjects")
+        print(f"Overlap:          {result['n_overlap']} subjects")
+        print(f"Health only:      {result['n_health_only']} subjects")
+        print(f"FastSurfer only:  {result['n_fastsurfer_only']} subjects")
+
+        return result
+
     def get(self, hunt_id_or_path: str) -> np.ndarray | None:
         """
         Return a float32 feature vector for one subject, or None if unknown.
@@ -81,7 +132,7 @@ class CombinedMetadataLoader:
         self._load()
         idx = self._id_to_idx.get(self._resolve_id(hunt_id_or_path))
         if idx is None:
-            print(f"CombinedMetadataLoader: no entry for {hunt_id_or_path!r}")
+            print(f"CombinedMetadataUtil: no entry for {hunt_id_or_path!r}")
             return None
         return self._features[idx]
 
@@ -132,14 +183,14 @@ class CombinedMetadataLoader:
         return str(id_or_path).zfill(5)
 
 
-class SubsetCombinedMetadataLoader:
+class SubsetCombinedMetadataUtil:
     """
-    Thin wrapper around CombinedMetadataLoader that exposes only a chosen
-    subset of features. Drop-in replacement for CombinedMetadataLoader
+    Thin wrapper around CombinedMetadataUtil that exposes only a chosen
+    subset of features. Drop-in replacement for CombinedMetadataUtil
     (same .get() / .n_features / .feature_names interface).
     """
 
-    def __init__(self, base: CombinedMetadataLoader, indices: list[int]):
+    def __init__(self, base: CombinedMetadataUtil, indices: list[int]):
         self._base    = base
         self._indices = np.array(indices, dtype=int)
 
