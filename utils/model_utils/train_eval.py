@@ -2,8 +2,8 @@ import torch
 import random
 import numpy as np
 import torch.optim as optim
-from utils.data_converter import DataConverter
-from utils.combined_metadata_loader import CombinedMetadataLoader
+from utils.mri.data_converter import DataConverter
+from utils.metadata.combined_metadata_utils import CombinedMetadataUtils
 from tqdm import tqdm
 import copy
 
@@ -36,7 +36,7 @@ def get_middle_slice_3D(volume: torch.Tensor | np.ndarray):
     sl = t[0, 0, :, :, mid]
     return sl.clamp(0, 1).numpy()
 
-def get_metadata_features(loader: CombinedMetadataLoader, path: str) -> torch.Tensor:
+def get_metadata_features(loader: CombinedMetadataUtils, path: str) -> torch.Tensor:
     features = loader.get(path)
     if features is None:
         features = np.zeros(loader.n_features, dtype=np.float32)
@@ -204,7 +204,7 @@ def fit_feature_based_3D(
     epochs=2000,
     loss_func=None,
     dataConverter: DataConverter = DataConverter(),
-    metadata_loader: CombinedMetadataLoader = CombinedMetadataLoader(),
+    metadata_loader: CombinedMetadataUtils = CombinedMetadataUtils(),
     optimizer=None,
     scheduler=None,
     snapshot_every: int = None,

@@ -7,9 +7,9 @@ import torch
 import torch.optim as optim
 import yaml
 
-from utils.combined_metadata_loader import CombinedMetadataLoader
-from utils.loss_functions import ssim_l1_loss
-from utils.train_eval import fit_3D, fit_feature_based_3D
+from utils.metadata.combined_metadata_utils import CombinedMetadataUtils
+from utils.model_utils.loss_functions import ssim_l1_loss
+from utils.model_utils.train_eval import fit_3D, fit_feature_based_3D
 
 MODEL_REGISTRY = {
     "std":  ("models.unet_3d_std",  "UNet3D"),
@@ -151,7 +151,7 @@ def run_pipeline(
     base_channels = int(yaml_params["base_channels"])
     grid          = config["grid"]
 
-    _combined_loader: CombinedMetadataLoader | None = None
+    _combined_loader: CombinedMetadataUtils | None = None
     trained_count = 0
 
     for entry in grid:
@@ -192,10 +192,10 @@ def run_pipeline(
                 checkpoint_every=checkpoint_every,
             )
 
-        # Feature-aware Model with CombinedMetadataLoader
+        # Feature-aware Model with CombinedMetadataUtils
         else: 
             if _combined_loader is None:
-                _combined_loader = CombinedMetadataLoader(
+                _combined_loader = CombinedMetadataUtils(
                     csv_path=os.path.join(metadata_root, "metadata_combined.csv")
                 )
             model = _build_model(entry, base_channels=base_channels, cond_dim=_combined_loader.n_features)
@@ -315,14 +315,14 @@ def select_champions(
         print("[select_champions] No completed entries found.")
         return {}
 
-    _combined_loader: CombinedMetadataLoader | None = None
+    _combined_loader: CombinedMetadataUtils | None = None
     champions: dict[str, torch.nn.Module] = {}
 
     for key, entry in best.items():
         model_path = entry["results"]["model_path"]
         if entry["model_type"] == "film":
             if _combined_loader is None:
-                _combined_loader = CombinedMetadataLoader(
+                _combined_loader = CombinedMetadataUtils(
                     csv_path=os.path.join(metadata_root, "metadata_combined.csv")
                 )
             model = _build_model(entry, base_channels=base_channels, cond_dim=_combined_loader.n_features)
