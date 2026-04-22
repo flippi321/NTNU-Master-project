@@ -2,6 +2,7 @@ import json
 import os
 import numpy as np
 import pandas as pd
+import utils.hunt_id_handler as hih
 
 
 class HealthDataLoader:
@@ -252,28 +253,37 @@ class HealthDataLoader:
     
     def combine_metadata(
         self,
+        hunt4_path: str | None = None,
         fastsurfer_path: str = "data/metadata/fastsurfer_aggregated_normalized.csv",
         mock_metadata_path: str = "data/metadata/mock_metadata_normalized.csv",
         output_path: str = "data/metadata/metadata_combined.csv",
         show_missing_ids: bool = False,
     ) -> pd.DataFrame:
+        if hunt4_path is not None:
+            hih.init(hunt4_path)
+        id_map = pd.Series(hih.long_to_short_map(), name="hunt_id")
+        id_map.index.name = "mr_hunt_id"
+
         fastsurfer = pd.read_csv(fastsurfer_path)
         mock = pd.read_csv(mock_metadata_path)
 
-        fastsurfer["mr_hunt_id"] = fastsurfer["mr_hunt_id"].astype(np.int64)
+        fastsurfer["hunt_id"] = fastsurfer["hunt_id"].astype(str).str.zfill(5)
+        fastsurfer_feat_cols = [c for c in fastsurfer.columns if c not in ("hunt_id", "mr_hunt_id")]
+
         mock = mock.rename(columns={"MR_HUNT_ID": "mr_hunt_id"})
         mock["mr_hunt_id"] = mock["mr_hunt_id"].astype(np.int64)
+        mock["hunt_id"] = mock["mr_hunt_id"].map(id_map)
+        unmapped = mock["hunt_id"].isna().sum()
+        if unmapped:
+            print(f"  WARNING: {unmapped} mock row(s) have mr_hunt_id not in {hunt4_path} — dropped")
+            mock = mock.dropna(subset=["hunt_id"])
+        mock_feat_cols = [c for c in mock.columns if c not in ("hunt_id", "mr_hunt_id")]
 
-        fastsurfer_feat_cols = [c for c in fastsurfer.columns if c not in ("hunt_id", "mr_hunt_id")]
-        mock_feat_cols = [c for c in mock.columns if c != "mr_hunt_id"]
         feat_cols = fastsurfer_feat_cols + mock_feat_cols
-
-        combined = fastsurfer.merge(mock, on="mr_hunt_id", how="outer")
-
-        # Subjects only in mock lack a hunt_id — derive it from mr_hunt_id
-        derived_ids = combined["mr_hunt_id"].apply(lambda x: str(int(x))[-5:].zfill(5))
-        combined["hunt_id"] = combined["hunt_id"].where(combined["hunt_id"].notna(), derived_ids)
-        combined["hunt_id"] = combined["hunt_id"].apply(lambda x: str(int(float(x)))[-5:].zfill(5))
+        combined = (
+            fastsurfer[["hunt_id"] + fastsurfer_feat_cols]
+            .merge(mock[["hunt_id"] + mock_feat_cols], on="hunt_id", how="outer")
+        )
 
         missing_fastsurfer_mask = combined[fastsurfer_feat_cols].isna().any(axis=1)
         rows_missing_fastsurfer = int(missing_fastsurfer_mask.sum())

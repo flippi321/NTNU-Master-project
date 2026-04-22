@@ -2,6 +2,7 @@ import os
 import glob
 import numpy as np
 import pandas as pd
+import utils.hunt_id_handler as hih
 
 # Mapping of Fastsufers regions to their corresponding lobes, based on bash files form St Olavs
 LOBE_REGIONS = {
@@ -58,28 +59,11 @@ class FastSurferAggregator:
     aggregation are dropped and reported.
     """
 
-    def __init__(self, smri_dir: str = "data/metadata/hdd/sMRI", hunt4_path: str = "data/metadata/HUNT4.xlsx"):
+    def __init__(self, smri_dir: str = "data/metadata/hdd/sMRI", hunt4_path: str | None = None):
         self.smri_dir = smri_dir
-        self.hunt4_path = hunt4_path
+        if hunt4_path is not None:
+            hih.init(hunt4_path)
         self._df: pd.DataFrame | None = None
-        self._id_map: dict | None = None  # mr_hunt_id (int) → hunt_id (str)
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def _load_id_map(self):
-        if self._id_map is not None:
-            return
-        hunt4 = pd.read_excel(self.hunt4_path)
-        hunt4 = hunt4.rename(columns={
-            "HUNT4 MRI Participant number": "hunt_id",
-            "Long HUNT3 numbers": "mr_hunt_id",
-        })
-        hunt4 = hunt4.dropna(subset=["mr_hunt_id"])
-        hunt4["mr_hunt_id"] = hunt4["mr_hunt_id"].astype(np.int64)
-        hunt4["hunt_id"] = hunt4["hunt_id"].astype(str).str.zfill(5)
-        self._id_map = hunt4.set_index("mr_hunt_id")["hunt_id"].to_dict()
 
     def load(self, valid_ids: set | None = None, force: bool = False) -> pd.DataFrame:
         """
@@ -99,7 +83,6 @@ class FastSurferAggregator:
         if self._df is not None and not force:
             return self._df
 
-        self._load_id_map()
         files = sorted(glob.glob(os.path.join(self.smri_dir, "*.csv")))
         if not files:
             raise FileNotFoundError(f"No CSV files found in {self.smri_dir!r}")
@@ -172,7 +155,7 @@ class FastSurferAggregator:
 
         row = df.iloc[0]
         subj_id = int(row["SubjID"])
-        hunt_id = self._id_map.get(subj_id)
+        hunt_id = hih.long_to_short(subj_id)
         if hunt_id is None:
             print(f"Warning: mr_hunt_id {subj_id} not found in HUNT4.xlsx — skipping")
             return None
