@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
+import utils.hunt_id_handler as hih
 
 
 class CombinedMetadataUtils:
@@ -75,9 +76,12 @@ class CombinedMetadataUtils:
         self,
         health_data_path: str = "data/metadata/processed/health_data_normalized.csv",
         fastsurfer_data_path: str = "data/metadata/processed/fastsurfer_data_normalized.csv",
-    ) -> dict:
+    ) -> tuple[list[str], list[str]]:
         """
         Compare the hunt_ids present in each source file and report coverage.
+
+        Prints a summary table and returns the long IDs of subjects that are
+        missing from each side.
 
         Parameters
         ----------
@@ -88,14 +92,10 @@ class CombinedMetadataUtils:
 
         Returns
         -------
-        dict with keys:
-            ``n_health``          – subjects in health data
-            ``n_fastsurfer``      – subjects in FastSurfer data
-            ``n_overlap``         – subjects present in both
-            ``n_health_only``     – subjects in health data but not FastSurfer
-            ``n_fastsurfer_only`` – subjects in FastSurfer but not health data
-            ``health_only``       – sorted list of hunt_ids exclusive to health data
-            ``fastsurfer_only``   – sorted list of hunt_ids exclusive to FastSurfer
+        health_only_long : list of str
+            Long MR_HUNT_IDs present in health data but not FastSurfer.
+        fastsurfer_only_long : list of str
+            Long MR_HUNT_IDs present in FastSurfer but not health data.
         """
         health_ids      = set(pd.read_csv(health_data_path,     usecols=["hunt_id"])["hunt_id"].astype(str).str.zfill(5))
         fastsurfer_ids  = set(pd.read_csv(fastsurfer_data_path, usecols=["hunt_id"])["hunt_id"].astype(str).str.zfill(5))
@@ -104,23 +104,31 @@ class CombinedMetadataUtils:
         health_only     = sorted(health_ids    - fastsurfer_ids)
         fastsurfer_only = sorted(fastsurfer_ids - health_ids)
 
-        result = {
-            "n_health":          len(health_ids),
-            "n_fastsurfer":      len(fastsurfer_ids),
-            "n_overlap":         len(overlap),
-            "n_health_only":     len(health_only),
-            "n_fastsurfer_only": len(fastsurfer_only),
-            "health_only":       health_only,
-            "fastsurfer_only":   fastsurfer_only,
-        }
+        print(f"Health data:      {len(health_ids)} subjects")
+        print(f"FastSurfer data:  {len(fastsurfer_ids)} subjects")
+        print(f"Overlap:          {len(overlap)} subjects")
+        print(f"Health only:      {len(health_only)} subjects")
+        print(f"FastSurfer only:  {len(fastsurfer_only)} subjects")
 
-        print(f"Health data:      {result['n_health']} subjects")
-        print(f"FastSurfer data:  {result['n_fastsurfer']} subjects")
-        print(f"Overlap:          {result['n_overlap']} subjects")
-        print(f"Health only:      {result['n_health_only']} subjects")
-        print(f"FastSurfer only:  {result['n_fastsurfer_only']} subjects")
+        def _to_long(ids):
+            return [str(hih.short_to_long(i) or "—") for i in ids]
 
-        return result
+        health_only_long     = _to_long(health_only)
+        fastsurfer_only_long = _to_long(fastsurfer_only)
+
+        for label, short_ids, long_ids in [
+            ("Health only",    health_only,     health_only_long),
+            ("FastSurfer only", fastsurfer_only, fastsurfer_only_long),
+        ]:
+            if not short_ids:
+                continue
+            print(f"\n{label}:")
+            print(f"  {'hunt_id':<10}  long_id")
+            print(f"  {'-'*9}  {'-'*15}")
+            for s, l in zip(short_ids, long_ids):
+                print(f"  {s:<10}  {l}")
+
+        return health_only_long, fastsurfer_only_long
 
     def get(self, hunt_id_or_path: str) -> np.ndarray | None:
         """

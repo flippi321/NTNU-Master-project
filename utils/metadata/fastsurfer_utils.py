@@ -602,12 +602,6 @@ class FastSurferLoader:
 
         rows = [r for f in csv_files if (r := self._process_csv(f, verbose=verbose)) is not None]
         df = pd.DataFrame(rows).set_index("hunt_id")
-
-        before = len(df)
-        df = df.dropna()
-        if (dropped := before - len(df)):
-            print(f"Dropped {dropped} subjects with NaN in aggregate features ({before} → {len(df)} subjects).")
-
         return df
 
     def _process_csv(self, csv_path: str, verbose: bool = False) -> dict | None:
