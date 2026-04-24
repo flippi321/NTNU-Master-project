@@ -143,7 +143,7 @@ def fit_3D(
             saved_snapshots.append({"iter": i, "x": x_np, "y": y_np, "recon": recon_np, "loss": capped_loss})
 
         # --- Validation ---
-        if (i % checkpoint_every == 0 or i == 0 or i == epochs - 1):
+        if (i % checkpoint_every == 0 or i == epochs - 1):
             # Check if we got new best
             if len(validation_pairs) > 0:
                 model.eval()
@@ -307,7 +307,7 @@ def fit_feature_based_3D(
             torch.cuda.synchronize()
 
         # --- Validation ---
-        if (i % checkpoint_every == 0 or i == 0 or i == epochs - 1) and len(validation_pairs) > 0:
+        if (i % checkpoint_every == 0 or i == epochs - 1) and len(validation_pairs) > 0:
             # Check if we got new best
             model.eval()
             val_losses = []
