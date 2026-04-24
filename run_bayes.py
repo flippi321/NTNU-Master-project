@@ -18,11 +18,13 @@ import argparse
 import os
 import sys
 
+import pandas as pd
 import torch
 
-from utils.bayes_search import init_yaml, run_bayes
-from utils.data_loader import DataLoader
-from utils.metadata_loader import HealthDataLoader
+from utils.model_utils.bayes_search import init_yaml, run_bayes
+from utils.mri.data_loader import DataLoader
+from utils.metadata.combined_metadata_utils import CombinedMetadataUtils
+from utils.metadata.stratified_splitter import StratifiedSplitter
 
 YAML_FILE     = "data/bayes_search.yaml"
 DB_PATH       = "data/bayes_search.db"
@@ -86,8 +88,10 @@ def main():
 
     data_loader   = DataLoader(root_path=DATA_ROOT)
     available_ids = set(data_loader.all_candidates)
-    split_loader  = HealthDataLoader(root_path=METADATA_ROOT, external_features=True)
-    train_ids, val_ids, _ = split_loader.split(train_split=0.70, val_split=0.15, seed=69)
+    meta_loader   = CombinedMetadataUtils()
+    df            = pd.read_csv(meta_loader.csv_path)
+    splitter      = StratifiedSplitter()
+    train_ids, val_ids, _ = splitter.split(df, train_split=0.70, val_split=0.15, seed=69)
     train_pairs = [data_loader.get_pair_path_from_id(i) for i in train_ids if i in available_ids]
     val_pairs   = [data_loader.get_pair_path_from_id(i) for i in val_ids   if i in available_ids]
     print(f"Train: {len(train_pairs)}  Val: {len(val_pairs)}\n")

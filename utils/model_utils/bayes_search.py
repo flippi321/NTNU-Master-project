@@ -7,10 +7,10 @@ import torch
 import torch.optim as optim
 import yaml
 
-from utils.combined_metadata_loader import CombinedMetadataLoader
-from utils.grid_search import CROP_AXES, MODEL_REGISTRY, _build_model, _build_scheduler
-from utils.loss_functions import ssim_l1_loss
-from utils.train_eval import fit_3D, fit_feature_based_3D
+from utils.metadata.combined_metadata_utils import CombinedMetadataUtils
+from utils.model_utils.grid_search import CROP_AXES, MODEL_REGISTRY, _build_model, _build_scheduler
+from utils.model_utils.loss_functions import ssim_l1_loss
+from utils.model_utils.train_eval import fit_3D, fit_feature_based_3D
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -133,7 +133,7 @@ def _run_one_trial(
     checkpoint_every: int,
     metadata_root: str,
     out_dir: str,
-    combined_loader: "CombinedMetadataLoader | None",
+    combined_loader: "CombinedMetadataUtils | None",
 ) -> tuple[float, str, "float | None"]:
     """Build model, train, save checkpoint. Returns (best_val_loss, model_path, final_train_loss)."""
     lr         = float(hyperparams["learning_rate"])
@@ -230,18 +230,18 @@ def run_bayes(
         )
 
     storage = f"sqlite:///{db_path}"
-    _combined_loader: CombinedMetadataLoader | None = None
+    _combined_loader: CombinedMetadataUtils | None = None
 
-    def _get_loader() -> CombinedMetadataLoader:
+    def _get_loader() -> CombinedMetadataUtils:
         nonlocal _combined_loader
         if _combined_loader is None:
-            _combined_loader = CombinedMetadataLoader(
+            _combined_loader = CombinedMetadataUtils(
                 csv_path=os.path.join(metadata_root, "metadata_combined.csv")
             )
         return _combined_loader
 
     completed = 0
-
+    
     for i in range(n_trials):
         # Round-robin across active model types
         model_type_key = active_types[i % len(active_types)]
@@ -369,14 +369,14 @@ def select_bayes_champions(
         print("[select_bayes_champions] No completed trials found.")
         return {}
 
-    _combined_loader: CombinedMetadataLoader | None = None
+    _combined_loader: CombinedMetadataUtils | None = None
     champions: dict[str, torch.nn.Module] = {}
 
     for key, entry in best.items():
         model_path = entry["results"]["model_path"]
         if entry["model_type"] == "film":
             if _combined_loader is None:
-                _combined_loader = CombinedMetadataLoader(
+                _combined_loader = CombinedMetadataUtils(
                     csv_path=os.path.join(metadata_root, "metadata_combined.csv")
                 )
             model = _build_model(entry, base_channels=base_channels, cond_dim=_combined_loader.n_features)

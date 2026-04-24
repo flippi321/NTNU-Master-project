@@ -19,9 +19,9 @@ class CombinedMetadataUtils:
 
     def __init__(
         self,
-        output_path: str = "data/metadata/metadata.csv",
+        csv_path: str = "data/metadata/metadata_combined.csv",
     ):
-        self.output_path = output_path
+        self.csv_path = csv_path
         self._feature_names: list[str] = []
         self._features: np.ndarray | None = None   # (N, F) float32
         self._id_to_idx: dict[str, int] = {}
@@ -54,10 +54,10 @@ class CombinedMetadataUtils:
         str
             Path to the combined CSV.
         """
-        if os.path.exists(self.output_path) and not overwrite:
-            print(f"[combine] {self.output_path} exists — skipping (pass overwrite=True to regenerate)")
+        if os.path.exists(self.csv_path) and not overwrite:
+            print(f"[combine] {self.csv_path} exists — skipping (pass overwrite=True to regenerate)")
             self._load()
-            return self.output_path
+            return self.csv_path
 
         health = pd.read_csv(health_data_path)
         health["hunt_id"] = health["hunt_id"].astype(str).str.zfill(5)
@@ -66,22 +66,21 @@ class CombinedMetadataUtils:
         fastsurfer["hunt_id"] = fastsurfer["hunt_id"].astype(str).str.zfill(5)
 
         merged = health.merge(fastsurfer, on="hunt_id", how="inner")
-        merged.to_csv(self.output_path, index=False)
-        print(f"[combine] {len(merged)} subjects, {len(merged.columns)} cols → {self.output_path}")
+        dropped = (len(health) - len(merged)) + (len(fastsurfer) - len(merged))
+        print(f"[combine] health={len(health)}  fastsurfer={len(fastsurfer)}  overlap={len(merged)}  dropped={dropped}")
+        print(f"[combine] {len(merged)} subjects × {len(merged.columns)} features → {self.csv_path}")
+        merged.to_csv(self.csv_path, index=False)
 
         self._build_arrays(merged)
-        return self.output_path
+        return self.csv_path
 
-    def check_overlap(
+    def get_overlap(
         self,
         health_data_path: str = "data/metadata/processed/health_data_normalized.csv",
         fastsurfer_data_path: str = "data/metadata/processed/fastsurfer_data_normalized.csv",
-    ) -> tuple[list[str], list[str]]:
+    ) -> list[str]:
         """
-        Compare the hunt_ids present in each source file and report coverage.
-
-        Prints a summary table and returns the long IDs of subjects that are
-        missing from each side.
+        Return the hunt_ids present in both source files and print a coverage summary.
 
         Parameters
         ----------
@@ -92,17 +91,15 @@ class CombinedMetadataUtils:
 
         Returns
         -------
-        health_only_long : list of str
-            Long MR_HUNT_IDs present in health data but not FastSurfer.
-        fastsurfer_only_long : list of str
-            Long MR_HUNT_IDs present in FastSurfer but not health data.
+        list of str
+            Sorted hunt_ids present in both health and FastSurfer data.
         """
-        health_ids      = set(pd.read_csv(health_data_path,     usecols=["hunt_id"])["hunt_id"].astype(str).str.zfill(5))
-        fastsurfer_ids  = set(pd.read_csv(fastsurfer_data_path, usecols=["hunt_id"])["hunt_id"].astype(str).str.zfill(5))
+        health_ids     = set(pd.read_csv(health_data_path,     usecols=["hunt_id"])["hunt_id"].astype(str).str.zfill(5))
+        fastsurfer_ids = set(pd.read_csv(fastsurfer_data_path, usecols=["hunt_id"])["hunt_id"].astype(str).str.zfill(5))
 
-        overlap         = health_ids & fastsurfer_ids
-        health_only     = sorted(health_ids    - fastsurfer_ids)
-        fastsurfer_only = sorted(fastsurfer_ids - health_ids)
+        overlap         = sorted(health_ids & fastsurfer_ids)
+        health_only     = health_ids    - fastsurfer_ids
+        fastsurfer_only = fastsurfer_ids - health_ids
 
         print(f"Health data:      {len(health_ids)} subjects")
         print(f"FastSurfer data:  {len(fastsurfer_ids)} subjects")
@@ -110,25 +107,7 @@ class CombinedMetadataUtils:
         print(f"Health only:      {len(health_only)} subjects")
         print(f"FastSurfer only:  {len(fastsurfer_only)} subjects")
 
-        def _to_long(ids):
-            return [str(hih.short_to_long(i) or "—") for i in ids]
-
-        health_only_long     = _to_long(health_only)
-        fastsurfer_only_long = _to_long(fastsurfer_only)
-
-        for label, short_ids, long_ids in [
-            ("Health only",    health_only,     health_only_long),
-            ("FastSurfer only", fastsurfer_only, fastsurfer_only_long),
-        ]:
-            if not short_ids:
-                continue
-            print(f"\n{label}:")
-            print(f"  {'hunt_id':<10}  long_id")
-            print(f"  {'-'*9}  {'-'*15}")
-            for s, l in zip(short_ids, long_ids):
-                print(f"  {s:<10}  {l}")
-
-        return health_only_long, fastsurfer_only_long
+        return overlap
 
     def get(self, hunt_id_or_path: str) -> np.ndarray | None:
         """
@@ -179,11 +158,11 @@ class CombinedMetadataUtils:
     def _load(self) -> None:
         if self._features is not None:
             return
-        if not os.path.exists(self.output_path):
+        if not os.path.exists(self.csv_path):
             raise FileNotFoundError(
-                f"Combined metadata not found at '{self.output_path}'. Run combine() first."
+                f"Combined metadata not found at '{self.csv_path}'. Run combine() first."
             )
-        self._build_arrays(pd.read_csv(self.output_path))
+        self._build_arrays(pd.read_csv(self.csv_path, dtype={"hunt_id": str}))
 
     def _resolve_id(self, id_or_path: str) -> str:
         if os.sep in id_or_path or "/" in id_or_path:

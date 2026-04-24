@@ -7,10 +7,11 @@ class DataLoader():
         self.root = root_path
         self.all_candidates = os.listdir(os.path.join(self.root, self.datasets[0]))
 
-    def get_pair_path_from_id(self, candidate: str):
+    def get_pair_path_from_id(self, candidate):
         """
         Returns the Hunt3 and Hunt4 paths for a given candidate id
         """
+        candidate = str(candidate)
         hunt3_path = os.path.join(self.root, self.datasets[0], candidate, f'{candidate}_0_T1_PREP_MNI.nii.gz')
         hunt4_path = os.path.join(self.root, self.datasets[1], candidate, f'{candidate}_1_T1_PREP_MNI.nii.gz')
         return hunt3_path, hunt4_path
