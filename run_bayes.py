@@ -75,6 +75,26 @@ def main():
         "--setup", action="store_true",
         help="Run environment/data checks and exit without training",
     )
+    parser.add_argument(
+        "--epochs", type=int, default=4000,
+        help="Epochs per trial (written to YAML on first run, ignored if YAML already exists)",
+    )
+    parser.add_argument(
+        "--base_channels", type=int, default=16,
+        help="Base channel width for all models (written to YAML on first run)",
+    )
+    parser.add_argument(
+        "--restart_threshold", type=float, default=None,
+        help="Val-loss threshold at restart_check_epoch; restart with fresh weights if not met",
+    )
+    parser.add_argument(
+        "--restart_check_epoch", type=int, default=250,
+        help="Epoch at which to check the restart threshold (default: 250)",
+    )
+    parser.add_argument(
+        "--max_total_runs", type=int, default=3,
+        help="Maximum restart attempts per trial (default: 3)",
+    )
     args = parser.parse_args()
 
     if args.setup:
@@ -84,7 +104,14 @@ def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    init_yaml(YAML_FILE, epochs=4000, base_channels=32)
+    init_yaml(
+        YAML_FILE,
+        epochs=args.epochs,
+        base_channels=args.base_channels,
+        restart_threshold=args.restart_threshold,
+        restart_check_epoch=args.restart_check_epoch,
+        max_total_runs=args.max_total_runs,
+    )
 
     data_loader   = DataLoader(root_path=DATA_ROOT)
     available_ids = set(data_loader.all_candidates)
