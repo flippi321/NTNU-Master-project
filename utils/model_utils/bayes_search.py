@@ -8,16 +8,16 @@ import torch.optim as optim
 import yaml
 
 from utils.metadata.combined_metadata_utils import CombinedMetadataUtils
-from utils.model_utils.grid_search import CROP_AXES, MODEL_REGISTRY, _build_model, _build_scheduler
+from utils.model_utils.grid_search import CROP_AXES, _build_model, _build_scheduler
 from utils.model_utils.loss_functions import ssim_l1_loss
 from utils.model_utils.train_eval import fit_3D, fit_feature_based_3D
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 STUDY_NAMES: dict[str, str] = {
-    "std":          "bayes_std",
     "film_simple":  "bayes_film_simple",
     "film_complex": "bayes_film_complex",
+    "std":          "bayes_std",
 }
 
 
@@ -66,7 +66,14 @@ def _make_trial_id(model_type_key: str, trial_number: int) -> str:
 # YAML persistence
 # ─────────────────────────────────────────────────────────────────────────────
 
-def init_yaml(yaml_file: str, epochs: int, base_channels: int) -> None:
+def init_yaml(
+    yaml_file: str,
+    epochs: int,
+    base_channels: int,
+    restart_threshold: float | None = None,
+    restart_check_epoch: int = 250,
+    max_total_runs: int = 3,
+) -> None:
     """Create bayes_search.yaml with params header. No-op if already exists."""
     if os.path.exists(yaml_file):
         return
@@ -75,6 +82,9 @@ def init_yaml(yaml_file: str, epochs: int, base_channels: int) -> None:
         "params": {
             "epochs": epochs,
             "base_channels": base_channels,
+            "restart_threshold": restart_threshold,
+            "restart_check_epoch": restart_check_epoch,
+            "max_total_runs": max_total_runs,
             "created_at": datetime.now().isoformat(timespec="seconds"),
         },
         "trials": [],
@@ -134,6 +144,9 @@ def _run_one_trial(
     metadata_root: str,
     out_dir: str,
     combined_loader: "CombinedMetadataUtils | None",
+    restart_threshold: float | None,
+    restart_check_epoch: int,
+    max_total_runs: int,
 ) -> tuple[float, str, "float | None"]:
     """Build model, train, save checkpoint. Returns (best_val_loss, model_path, final_train_loss)."""
     lr         = float(hyperparams["learning_rate"])
@@ -156,6 +169,9 @@ def _run_one_trial(
             scheduler=scheduler,
             crop_axes=CROP_AXES,
             checkpoint_every=checkpoint_every,
+            restart_threshold=restart_threshold,
+            restart_check_epoch=restart_check_epoch,
+            max_total_runs=max_total_runs,
         )
     else:
         model     = _build_model(hyperparams, base_channels=base_channels, cond_dim=combined_loader.n_features)
@@ -173,6 +189,9 @@ def _run_one_trial(
             scheduler=scheduler,
             crop_axes=CROP_AXES,
             checkpoint_every=checkpoint_every,
+            restart_threshold=restart_threshold,
+            restart_check_epoch=restart_check_epoch,
+            max_total_runs=max_total_runs,
         )
 
     model_path = os.path.join(out_dir, f"{trial_id}_best.pth")
@@ -193,8 +212,6 @@ def run_bayes(
     train_pairs: list[tuple[str, str]],
     val_pairs: list[tuple[str, str]],
     n_trials: int = 20,
-    epochs: int = 4000,
-    base_channels: int = 32,
     checkpoint_every: int = 250,
     metadata_root: str = "data/metadata",
     out_dir: str = "out/bayes_search",
@@ -208,11 +225,15 @@ def run_bayes(
     Resumable: calling run_bayes() again continues from where it left off.
     After each trial, appends results to yaml_file.
 
+    Training config (epochs, base_channels, restart_*) is read from the YAML
+    params section written by init_yaml — there is no duplication.
+
     Parameters
     ----------
     yaml_file        : path to bayes_search.yaml (human-readable audit log)
     db_path          : path to SQLite file, e.g. "data/bayes_search.db"
     n_trials         : total NEW trials to run this session across all active types
+    checkpoint_every : how often (in epochs) to run validation inside each trial
     model_filter     : None (all types), 'std', 'film_simple', or 'film_complex'
     stop_after_first : run exactly one trial then return
 
@@ -221,6 +242,24 @@ def run_bayes(
     int  Number of trials completed in this call.
     """
     os.makedirs(out_dir, exist_ok=True)
+
+    # All fixed training config lives in the YAML params written by init_yaml
+    config = _load_yaml(yaml_file)
+    params = config.get("params", {})
+    epochs               = int(params["epochs"])
+    base_channels        = int(params["base_channels"])
+    restart_threshold    = params.get("restart_threshold")
+    restart_check_epoch  = int(params.get("restart_check_epoch", 250))
+    max_total_runs       = int(params.get("max_total_runs", 3))
+
+    if restart_threshold is not None:
+        restart_threshold = float(restart_threshold)
+
+    print(
+        f"[bayes_search] epochs={epochs}  base_channels={base_channels}  "
+        f"restart_threshold={restart_threshold}  restart_check_epoch={restart_check_epoch}  "
+        f"max_total_runs={max_total_runs}"
+    )
 
     active_types = [k for k in STUDY_NAMES if model_filter is None or k == model_filter]
     if not active_types:
@@ -299,6 +338,9 @@ def run_bayes(
                 metadata_root=metadata_root,
                 out_dir=out_dir,
                 combined_loader=loader,
+                restart_threshold=restart_threshold,
+                restart_check_epoch=restart_check_epoch,
+                max_total_runs=max_total_runs,
             )
             study.tell(trial, best_val_loss)
             entry["results"] = {
