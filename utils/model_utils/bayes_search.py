@@ -194,7 +194,7 @@ def _run_one_trial(
             max_total_runs=max_total_runs,
         )
 
-    model_path = os.path.join(out_dir, f"{trial_id}_best.pth")
+    model_path = os.path.join(out_dir, f"{trial_id}_({best_val_loss:.4f}).pth")
     torch.save(best_model.state_dict(), model_path)
 
     final_train_loss = float(loss_history[-1]) if loss_history else None
@@ -204,6 +204,38 @@ def _run_one_trial(
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _cleanup_incomplete_trials(
+    active_types: list[str],
+    storage: str,
+    yaml_file: str,
+) -> None:
+    """Mark interrupted Optuna trials as FAIL and remove incomplete YAML entries."""
+    cleaned_optuna = 0
+    for type_key in active_types:
+        study_name = STUDY_NAMES[type_key]
+        try:
+            study = optuna.load_study(study_name=study_name, storage=storage)
+        except Exception:
+            continue
+        for frozen in study.trials:
+            if frozen.state == optuna.trial.TrialState.RUNNING:
+                study.tell(frozen.number, state=optuna.trial.TrialState.FAIL)
+                cleaned_optuna += 1
+                print(f"[bayes_search] Marked interrupted trial {frozen.number} in {study_name} as FAIL")
+
+    config = _load_yaml(yaml_file)
+    trials = config.get("trials", [])
+    complete = [t for t in trials if t.get("results", {}).get("completed", False)]
+    removed = len(trials) - len(complete)
+    if removed > 0:
+        config["trials"] = complete
+        _save_yaml(yaml_file, config)
+        print(f"[bayes_search] Removed {removed} incomplete YAML entry(s)")
+
+    if cleaned_optuna or removed:
+        print(f"[bayes_search] Cleanup done — {cleaned_optuna} Optuna trial(s) failed, {removed} YAML entry(s) dropped")
+
 
 def run_bayes(
     yaml_file: str,
@@ -269,6 +301,7 @@ def run_bayes(
         )
 
     storage = f"sqlite:///{db_path}"
+    _cleanup_incomplete_trials(active_types, storage, yaml_file)
     _combined_loader: CombinedMetadataUtils | None = None
 
     def _get_loader() -> CombinedMetadataUtils:
