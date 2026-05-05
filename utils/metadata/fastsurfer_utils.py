@@ -609,16 +609,16 @@ class FastSurferLoader:
         m = re.match(r"MRI_(\d+)_all\.csv", os.path.basename(csv_path))
         if not m:
             return None
-        long_id = int(m.group(1))
+        old_id = int(m.group(1))
 
-        hunt_id = hih.long_to_short(long_id)
+        hunt_id = hih.old_to_short(old_id)
         if hunt_id is None:
-            short_candidate = str(long_id).zfill(5)
-            if hih.short_to_long(short_candidate) is not None:
+            short_candidate = str(old_id).zfill(5)
+            if hih.short_to_old(short_candidate) is not None:
                 hunt_id = short_candidate
             else:
                 if verbose:
-                    print(f"Warning: {long_id} not found in HUNT4.xlsx — skipping")
+                    print(f"Warning: {old_id} not found in HUNT4.xlsx — skipping")
                 return None
 
         try:
@@ -660,16 +660,16 @@ class FastSurferLoader:
         m = _SUBJ_RE.match(dirname)
         if not m:
             return None
-        long_id = int(m.group(1))
+        old_id = int(m.group(1))
 
-        hunt_id = hih.long_to_short(long_id)
+        hunt_id = hih.old_to_short(old_id)
         if hunt_id is None:
-            short_candidate = str(long_id).zfill(5)
-            if hih.short_to_long(short_candidate) is not None:
+            short_candidate = str(old_id).zfill(5)
+            if hih.short_to_old(short_candidate) is not None:
                 hunt_id = short_candidate
             else:
                 if verbose:
-                    print(f"Warning: {long_id} not found in HUNT4.xlsx — skipping")
+                    print(f"Warning: {old_id} not found in HUNT4.xlsx — skipping")
                 return None
 
         stats_dir = os.path.join(path, "stats")

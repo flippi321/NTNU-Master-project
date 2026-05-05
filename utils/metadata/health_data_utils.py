@@ -4,6 +4,21 @@ import pandas as pd
 import utils.hunt_id_handler as hih
 
 class HealthDataLoader:
+    PID_SAV_NAME = os.path.join("health_data", "NT4MRI-PID.sav")
+
+    # Column classification for ``generate_normalized``. Keyed by source-column name.
+    ID_COL = "PID@115827"
+    DROP_COLS = [
+        "Part@NT2BLQ1", "Part@NT3BLI", "Part@NT3BLM", "Part@NT3BLQ1", "Part@NT3BLQ2",
+    ]
+    BINARY_COLS = ["Sex", "DiaEv@NT3BLQ1", "WorCu@NT3BLI"]
+    CATEGORICAL_COLS = ["Healt@NT3BLQ1", "SmoStat@NT3BLQ1", "Educ@NT2BLQ1"]
+    NUMERICAL_COLS = [
+        "BirthYear", "SmoPackYrs@NT3BLQ1", "WaistCirc@NT3BLM", "HipCirc@NT3BLM",
+        "BPDiasMn23@NT3BLM", "BPSystMn23@NT3BLM", "SeGluNonFast@NT3BLM",
+        "Bmi@NT3BLM", "HADSTotExtr@NT3BLQ2",
+    ]
+
     def __init__(
         self,
         root: str = "data/metadata",
@@ -19,79 +34,115 @@ class HealthDataLoader:
         """
         self.data_root            = root
         self.data_name_normalized = data_name_normalized
+        self.id_mapper_path       = os.path.join("data", "metadata", "processed", "id_mapping.csv")
         self.out_path: str | None = None
         self._combined            = None
         self._index               = {}
 
+    def sav_to_csv(self, overwrite: bool = False) -> str:
+        """Convert ``NT4MRI-PID.sav`` → ``data/metadata/processed/id_mapping.csv``."""
+        out_path = self.id_mapper_path
+        if os.path.exists(out_path) and not overwrite:
+            print(f"[sav_to_csv] {out_path} already exists — skipping (pass overwrite=True to regenerate)")
+            return out_path
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        sav_path = os.path.join(self.data_root, self.PID_SAV_NAME)
+        df = pd.read_spss(sav_path)
+        df.to_csv(out_path, index=False)
+        print(f"[sav_to_csv] Saved {len(df)} rows → {out_path}")
+        return out_path
+
     def generate_normalized(
         self,
         out_dir: str,
-        hunt3_path: str | None = None,
-        health_features_path: str | None = None,
+        health_data_path: str | None = None,
         overwrite: bool = False,
     ) -> str:
         """
-        Build a normalized health metadata CSV from HUNT3 and mock_metadata.
+        Build a normalized health-features CSV from a cleaned HUNT health-data CSV.
 
-        Uses ``hih.long_to_short()`` to map MR_HUNT_IDs to 5-digit hunt_ids.
-        All numeric feature columns are min-max scaled to [0, 1].
-        Writes to ``<out_dir>/<data_name_normalized>``.
+        Column types are classified by name (see the class-level ``BINARY_COLS``,
+        ``CATEGORICAL_COLS``, ``NUMERICAL_COLS``, ``DROP_COLS`` constants):
+
+        - ``Sex`` is binary with ``1`` = Male and missing/[NONE] = Female (→ 0).
+        - Other binary columns are cast to int 0/1.
+        - Numerical columns are min-max scaled to [0, 1].
+        - Categorical columns are one-hot encoded.
+        - ``Part@*`` columns are dropped (participation flags, not features).
+        - ``PID@115827`` (long ID) is mapped to ``hunt_id`` (5-char short ID).
+
+        After Sex is normalized (its [NONE] is by design), any remaining missing
+        value is reported with its (row, column) and replaced with 0. The input
+        CSV is expected to have no missing data.
 
         Parameters
         ----------
         out_dir : str
             Directory where the normalized CSV will be written.
-        hunt3_path : str, optional
-            Path to HUNT3.csv. Defaults to ``<root>/HUNT3.csv``.
-        health_features_path : str, optional
-            Path to mock_metadata.csv containing per-subject health features.
-            Defaults to ``<root>/mock_metadata.csv``.
+        health_data_path : str, optional
+            Path to the cleaned health-data CSV. Defaults to
+            ``<root>/health_data/health_data_clean.csv``.
         overwrite : bool
-            If False (default) and the file already exists, skip.
+            If False (default) and the output already exists, skip.
 
         Returns
         -------
         str
             Path to the normalized CSV.
         """
-        hunt3_path           = hunt3_path or os.path.join(self.data_root, "HUNT3.csv")
-        health_features_path = health_features_path or os.path.join(self.data_root, "mock_metadata.csv")
+        health_data_path = health_data_path or os.path.join(
+            self.data_root, "health_data", "health_data.csv"
+        )
 
         self.out_path = os.path.join(out_dir, self.data_name_normalized)
         if os.path.exists(self.out_path) and not overwrite:
             print(f"[generate_normalized] {self.out_path} already exists — skipping (pass overwrite=True to regenerate)")
             return self.out_path
 
-        hunt3 = pd.read_csv(hunt3_path)
-        hunt3 = hunt3.rename(columns={"MR_HUNT_ID": "long_id", "Age_at_time_of_MRI": "age"})
-        hunt3["hunt_id"] = hunt3["long_id"].apply(lambda x: hih.long_to_short(int(x)))
-        hunt3 = hunt3.dropna(subset=["hunt_id"])
+        df = pd.read_csv(health_data_path)
 
-        features = pd.read_csv(health_features_path)
-        features = features.rename(columns={"MR_HUNT_ID": "long_id"})
+        # Drop participation-flag columns
+        df = df.drop(columns=[c for c in self.DROP_COLS if c in df.columns])
 
-        combined = hunt3[["hunt_id", "long_id", "age"]].merge(
-            features, on="long_id", how="inner"
-        ).drop(columns=["long_id"])
+        # Sex: 1 = Male, anything else (incl. missing → Female by convention) = 0
+        if "Sex" in df.columns:
+            df["Sex"] = (df["Sex"] == 1).astype(int)
 
-        id_cols = {"hunt_id"}
-        feat_cols = [c for c in combined.columns if c not in id_cols]
-        numeric_cols     = [c for c in feat_cols if     np.issubdtype(combined[c].dtype, np.number)]
-        categorical_cols = [c for c in feat_cols if not np.issubdtype(combined[c].dtype, np.number)]
+        # Report and zero-fill any remaining missing values
+        nan_mask = df.isna()
+        if nan_mask.any().any():
+            for col in nan_mask.columns:
+                for idx in df.index[nan_mask[col]]:
+                    print(f"[generate_normalized] Missing value at row {idx}, col {col!r} — set to 0")
+            df = df.fillna(0)
 
-        for col in numeric_cols:
-            col_min, col_max = combined[col].min(), combined[col].max()
-            if col_max > col_min:
-                combined[col] = (combined[col] - col_min) / (col_max - col_min)
+        # Map PID@115827 (long ID) → hunt_id (short ID) and drop the source column
+        df["hunt_id"] = df[self.ID_COL].apply(lambda x: hih.long_to_short(int(x)))
+        df = df.dropna(subset=["hunt_id"]).drop(columns=[self.ID_COL])
 
-        if categorical_cols:
-            dummies = pd.get_dummies(combined[categorical_cols]).astype(np.float32)
-            combined = combined.drop(columns=categorical_cols)
-            combined = pd.concat([combined, dummies], axis=1)
+        # Binary columns (other than Sex, already handled): coerce to int 0/1
+        for col in self.BINARY_COLS:
+            if col != "Sex" and col in df.columns:
+                df[col] = df[col].astype(int)
 
-        combined = combined[["hunt_id"] + [c for c in combined.columns if c != "hunt_id"]]
-        combined.to_csv(self.out_path, index=False)
-        print(f"[generate_normalized] Saved {len(combined)} rows → {self.out_path}")
+        # Numerical: min-max scale to [0, 1]
+        for col in self.NUMERICAL_COLS:
+            if col in df.columns:
+                lo, hi = df[col].min(), df[col].max()
+                if hi > lo:
+                    df[col] = (df[col] - lo) / (hi - lo)
+
+        # Categorical: one-hot encode
+        cat_present = [c for c in self.CATEGORICAL_COLS if c in df.columns]
+        if cat_present:
+            dummies = pd.get_dummies(df[cat_present], columns=cat_present).astype(np.float32)
+            df = df.drop(columns=cat_present)
+            df = pd.concat([df, dummies], axis=1)
+
+        # hunt_id first
+        df = df[["hunt_id"] + [c for c in df.columns if c != "hunt_id"]]
+        df.to_csv(self.out_path, index=False)
+        print(f"[generate_normalized] Saved {len(df)} rows → {self.out_path}")
 
         self._combined = None
         self._index    = {}

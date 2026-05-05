@@ -2,6 +2,7 @@ import os
 import tempfile
 from datetime import datetime
 
+import numpy as np
 import optuna
 import torch
 import torch.optim as optim
@@ -10,7 +11,8 @@ import yaml
 from utils.metadata.combined_metadata_utils import CombinedMetadataUtils
 from utils.model_utils.grid_search import CROP_AXES, _build_model, _build_scheduler
 from utils.model_utils.loss_functions import ssim_l1_loss
-from utils.model_utils.train_eval import fit_3D, fit_feature_based_3D
+from utils.model_utils.train_eval import fit_3D, fit_feature_based_3D, get_metadata_features
+from utils.mri.data_converter import DataConverter
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -131,6 +133,44 @@ def _append_trial_to_yaml(yaml_file: str, entry: dict) -> None:
 # Core training
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _eval_on_pairs(
+    model: torch.nn.Module,
+    device: torch.device,
+    pairs: list[tuple[str, str]],
+    combined_loader: "CombinedMetadataUtils | None",
+) -> "float | None":
+    """Average ssim_l1_loss of model (in eval mode) over all pairs. Returns None if pairs is empty."""
+    if not pairs:
+        return None
+
+    data_device = getattr(model, "dev0", device)
+    dc = DataConverter()
+    losses = []
+
+    model.eval()
+    with torch.no_grad():
+        for x_path, y_path in pairs:
+            x = dc.load_path_as_tensor(x_path, data_device)
+            y = dc.load_path_as_tensor(y_path, data_device)
+
+            if CROP_AXES is not None:
+                x = dc.get_volume_with_3d_change(tensor=x, crop_axes=CROP_AXES, remove_mode=True)
+                y = dc.get_volume_with_3d_change(tensor=y, crop_axes=CROP_AXES, remove_mode=True)
+
+            if combined_loader is not None:
+                feat = get_metadata_features(combined_loader, x_path).to(data_device)
+                out = model(x, feat)
+            else:
+                out = model(x)
+
+            y_hat = out[0] if isinstance(out, (tuple, list)) else out
+            crit_out = ssim_l1_loss(y_hat, y)
+            loss = crit_out[0] if isinstance(crit_out, (tuple, list)) else crit_out
+            losses.append(float(loss.item()))
+
+    return float(np.mean(losses)) if losses else None
+
+
 def _run_one_trial(
     model_type_key: str,
     hyperparams: dict,
@@ -140,6 +180,7 @@ def _run_one_trial(
     device: torch.device,
     train_pairs: list[tuple[str, str]],
     val_pairs: list[tuple[str, str]],
+    test_pairs: list[tuple[str, str]],
     checkpoint_every: int,
     metadata_root: str,
     out_dir: str,
@@ -148,7 +189,7 @@ def _run_one_trial(
     restart_check_epoch: int,
     max_total_runs: int,
 ) -> tuple[float, str, "float | None"]:
-    """Build model, train, save checkpoint. Returns (best_val_loss, model_path, final_train_loss)."""
+    """Build model, train, save checkpoint. Returns (best_val_loss, model_path, best_test_loss)."""
     lr         = float(hyperparams["learning_rate"])
     wd         = float(hyperparams["weight_decay"])
     betas      = (float(hyperparams["beta1"]), float(hyperparams["beta2"]))
@@ -197,8 +238,8 @@ def _run_one_trial(
     model_path = os.path.join(out_dir, f"{trial_id}_({best_val_loss:.4f}).pth")
     torch.save(best_model.state_dict(), model_path)
 
-    final_train_loss = float(loss_history[-1]) if loss_history else None
-    return float(best_val_loss), model_path, final_train_loss
+    best_test_loss = _eval_on_pairs(best_model, device, test_pairs, combined_loader if model_type_key != "std" else None)
+    return float(best_val_loss), model_path, best_test_loss
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -243,6 +284,7 @@ def run_bayes(
     device: torch.device,
     train_pairs: list[tuple[str, str]],
     val_pairs: list[tuple[str, str]],
+    test_pairs: list[tuple[str, str]] | None = None,
     n_trials: int = 20,
     checkpoint_every: int = 250,
     metadata_root: str = "data/metadata",
@@ -264,6 +306,7 @@ def run_bayes(
     ----------
     yaml_file        : path to bayes_search.yaml (human-readable audit log)
     db_path          : path to SQLite file, e.g. "data/bayes_search.db"
+    test_pairs       : held-out pairs evaluated with the best model after each trial
     n_trials         : total NEW trials to run this session across all active types
     checkpoint_every : how often (in epochs) to run validation inside each trial
     model_filter     : None (all types), 'std', 'film_simple', or 'film_complex'
@@ -358,7 +401,7 @@ def run_bayes(
 
         try:
             loader = None if model_type_key == "std" else _get_loader()
-            best_val_loss, model_path, final_train_loss = _run_one_trial(
+            best_val_loss, model_path, best_test_loss = _run_one_trial(
                 model_type_key=model_type_key,
                 hyperparams=hyperparams,
                 trial_id=trial_id,
@@ -367,6 +410,7 @@ def run_bayes(
                 device=device,
                 train_pairs=train_pairs,
                 val_pairs=val_pairs,
+                test_pairs=test_pairs or [],
                 checkpoint_every=checkpoint_every,
                 metadata_root=metadata_root,
                 out_dir=out_dir,
@@ -378,12 +422,13 @@ def run_bayes(
             study.tell(trial, best_val_loss)
             entry["results"] = {
                 "best_val_loss": best_val_loss,
-                "final_train_loss": final_train_loss,
+                "best_test_loss": best_test_loss,
                 "completed": True,
                 "trained_at": datetime.now().isoformat(timespec="seconds"),
                 "model_path": model_path,
             }
-            print(f"[bayes_search] Done {trial_id}  best_val_loss={best_val_loss:.6f}  → {model_path}")
+            test_info = f"  best_test_loss={best_test_loss:.6f}" if best_test_loss is not None else ""
+            print(f"[bayes_search] Done {trial_id}  best_val_loss={best_val_loss:.6f}{test_info}  → {model_path}")
 
         except Exception as e:
             study.tell(trial, state=optuna.trial.TrialState.FAIL)
