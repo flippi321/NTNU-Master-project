@@ -131,7 +131,9 @@ class Self_Attention3D(nn.Module):
         v_red = self.norm_v(v_red)
 
         attn = (q @ k_red.transpose(-2, -1)) * self.scale
-        attn = self.attn_drop(attn.softmax(dim=-1))
+        # Force softmax to fp32 — under autocast the inputs are fp16 and softmax
+        # of large attention scores overflows to NaN.
+        attn = self.attn_drop(attn.float().softmax(dim=-1).to(q.dtype))
 
         out = (attn @ v_red).transpose(1, 2).reshape(B, N, C)
         out = self.proj_drop(self.proj(out))
@@ -206,7 +208,8 @@ class Self_Attention_local3D(nn.Module):
             v = torch.cat([m_v, v], dim=3)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = self.attn_drop(attn.softmax(dim=-1))
+        # fp32 softmax — see Self_Attention3D for rationale.
+        attn = self.attn_drop(attn.float().softmax(dim=-1).to(q.dtype))
 
         # (B, R, heads, Np, head_dim) -> (B, R, Np, heads, head_dim) -> (B, R, Np, C)
         out = (attn @ v).permute(0, 1, 3, 2, 4).reshape(B, R, Np, C)
@@ -311,11 +314,16 @@ class MetadataTokenizer(nn.Module):
             nn.GELU(),
             nn.Linear(hidden, n_tokens * dim),
         )
+        # LayerNorm pins the token scale so meta tokens enter attention K/V at the
+        # same statistical scale as the LayerNorm'd feature tokens — without this
+        # the attention scores depend on whatever scale the MLP produces, which
+        # makes softmax unstable.
+        self.norm = nn.LayerNorm(dim)
 
     def forward(self, cond: torch.Tensor) -> torch.Tensor:
         # cond: (B, F) -> (B, M, C)
-        v = self.mlp(cond)
-        return v.reshape(cond.shape[0], self.n_tokens, self.dim)
+        v = self.mlp(cond).reshape(cond.shape[0], self.n_tokens, self.dim)
+        return self.norm(v)
 
 
 # ============================================================
