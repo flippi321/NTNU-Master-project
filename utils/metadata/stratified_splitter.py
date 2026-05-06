@@ -25,13 +25,15 @@ class StratifiedSplitter:
 
     def split(
         self,
-        df:          pd.DataFrame,
-        id_col:      str            = "hunt_id",
-        skip_cols:   set[str] | None = None,
-        train_split: float          = 0.70,
-        val_split:   float          = 0.15,
-        seed:        int            = 69,
-        save_path:   str | None     = None,
+        df:             pd.DataFrame,
+        id_col:         str             = "hunt_id",
+        skip_cols:      set[str] | None = None,
+        train_split:    float           = 0.70,
+        val_split:      float           = 0.15,
+        seed:           int             = 69,
+        save_path:      str | None      = None,
+        filter_by_mri:  bool            = True,
+        mri_root:       str             = "data/",
     ) -> tuple[list, list, list]:
         """
         Partition subjects into train / val / test sets.
@@ -59,6 +61,14 @@ class StratifiedSplitter:
             Random seed for reproducibility (default 69).
         save_path : str, optional
             If given, write the split assignment to this JSON file.
+        filter_by_mri : bool
+            If True (default), drop any row whose ``id_col`` is not present
+            as a sub-directory in *both* ``<mri_root>/HUNT3`` and
+            ``<mri_root>/HUNT4``. Prevents splits from referencing subjects
+            without MRI files on disk.
+        mri_root : str
+            Root containing the ``HUNT3/`` and ``HUNT4/`` MRI directories
+            (default ``"data/"``). Only used when ``filter_by_mri`` is True.
 
         Returns
         -------
@@ -68,6 +78,9 @@ class StratifiedSplitter:
 
         if df.index.name == id_col:
             df = df.reset_index()
+
+        if filter_by_mri:
+            df = self._filter_by_mri(df, id_col, mri_root)
 
         skip = (skip_cols if skip_cols is not None else {"long_id", "mr_hunt_id"}) | {id_col}
 
@@ -154,6 +167,26 @@ class StratifiedSplitter:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _filter_by_mri(self, df: pd.DataFrame, id_col: str, mri_root: str) -> pd.DataFrame:
+        """Keep only rows whose id appears as a sub-directory in both HUNT3/ and HUNT4/."""
+        hunt3_dir = os.path.join(mri_root, "HUNT3")
+        hunt4_dir = os.path.join(mri_root, "HUNT4")
+        for d in (hunt3_dir, hunt4_dir):
+            if not os.path.isdir(d):
+                raise FileNotFoundError(
+                    f"[StratifiedSplitter] MRI directory {d!r} not found. "
+                    "Pass filter_by_mri=False or set mri_root correctly."
+                )
+        available = set(os.listdir(hunt3_dir)) & set(os.listdir(hunt4_dir))
+
+        n_before = len(df)
+        id_str = df[id_col].astype(str).str.zfill(5)
+        df = df[id_str.isin(available)].reset_index(drop=True)
+        n_dropped = n_before - len(df)
+        if n_dropped:
+            print(f"[StratifiedSplitter] Dropped {n_dropped}/{n_before} subjects without MRI on disk → {len(df)} remain")
+        return df
 
     def _build_label_matrix(self, df: pd.DataFrame, id_col: str, skip: set[str]) -> pd.DataFrame:
         df   = df.set_index(id_col)
