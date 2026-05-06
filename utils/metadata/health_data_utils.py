@@ -52,6 +52,124 @@ class HealthDataLoader:
         print(f"[sav_to_csv] Saved {len(df)} rows → {out_path}")
         return out_path
 
+    def generate_cleaned(
+        self,
+        out_dir:            str | None = None,
+        health_data_path:   str | None = None,
+        overwrite:          bool       = False,
+        numerical_strategy: str        = "knn",
+        n_neighbors:        int        = 5,
+    ) -> str:
+        """
+        Impute missing values in the raw health-data CSV and write a cleaned
+        copy that ``generate_normalized`` can consume.
+
+        Per-column strategy:
+
+        - ``Sex``: NaN → 0 (Female by source-data convention); not "missing".
+        - Other binary columns (``BINARY_COLS`` minus ``Sex``): mode imputation.
+        - Categorical columns (``CATEGORICAL_COLS``): mode imputation.
+        - Numerical columns (``NUMERICAL_COLS``): KNN imputation over all
+          numerical columns jointly (default, ``numerical_strategy='knn'``)
+          with ``n_neighbors``; or per-column ``'median'`` / ``'mean'``.
+        - ``ID_COL`` rows with NaN are dropped with a warning.
+        - ``DROP_COLS`` (participation flags) pass through untouched.
+
+        Parameters
+        ----------
+        out_dir : str, optional
+            Directory for the cleaned CSV. Defaults to
+            ``<data_root>/health_data``.
+        health_data_path : str, optional
+            Source CSV. Defaults to ``<data_root>/health_data/health_data.csv``.
+        overwrite : bool
+            If False (default) and the output already exists, skip and return
+            the existing path.
+        numerical_strategy : {'knn', 'median', 'mean'}
+            Imputation strategy for numerical columns.
+        n_neighbors : int
+            ``k`` for KNN imputation; ignored unless ``numerical_strategy='knn'``.
+
+        Returns
+        -------
+        str
+            Path to ``<out_dir>/health_data_clean.csv``.
+        """
+        out_dir          = out_dir          or os.path.join(self.data_root, "health_data")
+        health_data_path = health_data_path or os.path.join(self.data_root, "health_data", "health_data.csv")
+        out_path         = os.path.join(out_dir, "health_data_clean.csv")
+
+        if os.path.exists(out_path) and not overwrite:
+            print(f"[generate_cleaned] {out_path} already exists — skipping (pass overwrite=True to regenerate)")
+            return out_path
+
+        os.makedirs(out_dir, exist_ok=True)
+        df = pd.read_csv(health_data_path)
+
+        # Sex: NaN means Female by convention — set BEFORE imputation.
+        if "Sex" in df.columns:
+            n_sex_nan = int(df["Sex"].isna().sum())
+            df["Sex"] = df["Sex"].fillna(0).astype(int)
+            if n_sex_nan:
+                print(f"[generate_cleaned] Sex: {n_sex_nan} NaN → 0 (Female by convention)")
+
+        # Drop rows with missing ID
+        if self.ID_COL in df.columns:
+            n_id_nan = int(df[self.ID_COL].isna().sum())
+            if n_id_nan:
+                print(f"[generate_cleaned] {self.ID_COL}: dropping {n_id_nan} rows with missing ID")
+                df = df.dropna(subset=[self.ID_COL]).reset_index(drop=True)
+
+        # Mode-impute remaining binary + categorical columns
+        mode_cols = [c for c in self.BINARY_COLS + self.CATEGORICAL_COLS
+                     if c in df.columns and c != "Sex"]
+        n_imputed_total = 0
+        cols_imputed    = 0
+        for col in mode_cols:
+            n_nan = int(df[col].isna().sum())
+            if n_nan == 0:
+                continue
+            mode_val = df[col].mode(dropna=True)
+            if mode_val.empty:
+                print(f"[generate_cleaned] {col}: all values missing — leaving untouched")
+                continue
+            df[col] = df[col].fillna(mode_val.iloc[0])
+            print(f"[generate_cleaned] {col}: imputed {n_nan} values via mode (={mode_val.iloc[0]!r})")
+            n_imputed_total += n_nan
+            cols_imputed    += 1
+
+        # Numerical imputation
+        num_cols_present = [c for c in self.NUMERICAL_COLS if c in df.columns]
+        if num_cols_present:
+            n_num_nan_per_col = df[num_cols_present].isna().sum()
+            n_num_nan_total   = int(n_num_nan_per_col.sum())
+            if n_num_nan_total:
+                if numerical_strategy == "knn":
+                    from sklearn.impute import KNNImputer
+                    imputer = KNNImputer(n_neighbors=n_neighbors)
+                    df[num_cols_present] = imputer.fit_transform(df[num_cols_present])
+                    label = f"KNN(k={n_neighbors})"
+                elif numerical_strategy in ("median", "mean"):
+                    fill_vals = (df[num_cols_present].median()
+                                 if numerical_strategy == "median"
+                                 else df[num_cols_present].mean())
+                    df[num_cols_present] = df[num_cols_present].fillna(fill_vals)
+                    label = numerical_strategy
+                else:
+                    raise ValueError(
+                        f"numerical_strategy must be 'knn', 'median', or 'mean'; "
+                        f"got {numerical_strategy!r}"
+                    )
+                for col, n in n_num_nan_per_col.items():
+                    if n:
+                        print(f"[generate_cleaned] {col}: imputed {int(n)} values via {label}")
+                n_imputed_total += n_num_nan_total
+                cols_imputed    += int((n_num_nan_per_col > 0).sum())
+
+        df.to_csv(out_path, index=False)
+        print(f"[generate_cleaned] Imputed {n_imputed_total} values across {cols_imputed} cols → {out_path}")
+        return out_path
+
     def generate_normalized(
         self,
         out_dir: str,
@@ -91,7 +209,7 @@ class HealthDataLoader:
             Path to the normalized CSV.
         """
         health_data_path = health_data_path or os.path.join(
-            self.data_root, "health_data", "health_data.csv"
+            self.data_root, "health_data", "health_data_clean.csv"
         )
 
         self.out_path = os.path.join(out_dir, self.data_name_normalized)
