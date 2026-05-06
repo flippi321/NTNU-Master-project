@@ -9,6 +9,7 @@ Usage:
     python run_bayes.py --model_filter std                   # only std models
     python run_bayes.py --model_filter film_simple           # only film_simple
     python run_bayes.py --model_filter film_complex          # only film_complex
+    python run_bayes.py --model_filter meta                  # only meta UNet
     python run_bayes.py --n_trials 5                         # 5 new trials this session
     python run_bayes.py --stop_after_first                   # 1 trial then exit
     python run_bayes.py --setup                              # env/data check only
@@ -60,7 +61,7 @@ def main():
     )
     parser.add_argument(
         "--model_filter", type=str, default=None,
-        choices=["std", "film_simple", "film_complex"],
+        choices=["std", "film_simple", "film_complex", "meta"],
         help="Restrict to one model type (default: all, round-robin)",
     )
     parser.add_argument(

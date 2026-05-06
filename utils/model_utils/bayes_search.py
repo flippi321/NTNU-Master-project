@@ -1,5 +1,7 @@
+import fcntl
 import os
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 
 import numpy as np
@@ -20,6 +22,7 @@ STUDY_NAMES: dict[str, str] = {
     "film_simple":  "bayes_film_simple",
     "film_complex": "bayes_film_complex",
     "std":          "bayes_std",
+    "meta":         "bayes_meta",
 }
 
 
@@ -30,6 +33,8 @@ STUDY_NAMES: dict[str, str] = {
 def _type_key_from_entry(entry: dict) -> str:
     if entry["model_type"] == "std":
         return "std"
+    if entry["model_type"] == "meta":
+        return "meta"
     return f"film_{entry.get('film_generator_type', 'unknown')}"
 
 
@@ -51,6 +56,10 @@ def _suggest_hyperparams(trial: optuna.Trial, model_type_key: str) -> dict:
 
     if model_type_key == "std":
         params["model_type"] = "std"
+    elif model_type_key == "meta":
+        params["model_type"] = "meta"
+        params["n_meta_tokens"] = trial.suggest_int("n_meta_tokens", 4, 16, log=True)
+        params["num_heads"]     = trial.suggest_categorical("num_heads", [2, 4, 8])
     else:
         gen_type = "simple" if model_type_key == "film_simple" else "complex"
         params["model_type"] = "film"
@@ -116,17 +125,36 @@ def _save_yaml(yaml_file: str, config: dict) -> None:
         raise
 
 
+@contextmanager
+def _yaml_file_lock(yaml_file: str):
+    """Cross-process exclusive lock on a sidecar .lock file (fcntl.flock)."""
+    lock_path = yaml_file + ".lock"
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def _append_trial_to_yaml(yaml_file: str, entry: dict) -> None:
-    """Atomically append or update a trial entry in the YAML file."""
-    config = _load_yaml(yaml_file)
-    trials = config.setdefault("trials", [])
-    for i, t in enumerate(trials):
-        if t.get("id") == entry["id"]:
-            trials[i] = entry
-            _save_yaml(yaml_file, config)
-            return
-    trials.append(entry)
-    _save_yaml(yaml_file, config)
+    """Atomically append or update a trial entry in the YAML file.
+
+    Holds an exclusive flock on a sidecar lock file across the read-modify-write
+    so concurrent processes (e.g. one per --model_filter) can't lose entries.
+    """
+    with _yaml_file_lock(yaml_file):
+        config = _load_yaml(yaml_file)
+        trials = config.setdefault("trials", [])
+        for i, t in enumerate(trials):
+            if t.get("id") == entry["id"]:
+                trials[i] = entry
+                _save_yaml(yaml_file, config)
+                return
+        trials.append(entry)
+        _save_yaml(yaml_file, config)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -309,7 +337,7 @@ def run_bayes(
     test_pairs       : held-out pairs evaluated with the best model after each trial
     n_trials         : total NEW trials to run this session across all active types
     checkpoint_every : how often (in epochs) to run validation inside each trial
-    model_filter     : None (all types), 'std', 'film_simple', or 'film_complex'
+    model_filter     : None (all types), 'std', 'film_simple', 'film_complex', or 'meta'
     stop_after_first : run exactly one trial then return
 
     Returns
@@ -340,7 +368,7 @@ def run_bayes(
     if not active_types:
         raise ValueError(
             f"Unknown model_filter: {model_filter!r}. "
-            "Use None, 'std', 'film_simple', or 'film_complex'."
+            "Use None, 'std', 'film_simple', 'film_complex', or 'meta'."
         )
 
     storage = f"sqlite:///{db_path}"
@@ -374,14 +402,22 @@ def run_bayes(
         trial_id = _make_trial_id(model_type_key, trial.number + 1)
 
         print(f"\n[bayes_search] Starting {trial_id}")
-        film_info = (
-            f"  film_type={hyperparams['film_generator_type']}  mlp_hidden={hyperparams.get('mlp_hidden')}"
-            if model_type_key != "std" else ""
-        )
+        if model_type_key in ("film_simple", "film_complex"):
+            extra_info = (
+                f"  film_type={hyperparams['film_generator_type']}"
+                f"  mlp_hidden={hyperparams.get('mlp_hidden')}"
+            )
+        elif model_type_key == "meta":
+            extra_info = (
+                f"  n_meta_tokens={hyperparams['n_meta_tokens']}"
+                f"  num_heads={hyperparams['num_heads']}"
+            )
+        else:
+            extra_info = ""
         print(
             f"  lr={hyperparams['learning_rate']:.2e}  wd={hyperparams['weight_decay']:.2e}"
             f"  beta1={hyperparams['beta1']:.3f}  beta2={hyperparams['beta2']:.3f}"
-            f"  sched={hyperparams['lr_scheduler']}{film_info}"
+            f"  sched={hyperparams['lr_scheduler']}{extra_info}"
         )
 
         entry: dict = {
@@ -395,9 +431,12 @@ def run_bayes(
             "beta2": hyperparams["beta2"],
             "lr_scheduler": hyperparams["lr_scheduler"],
         }
-        if model_type_key != "std":
+        if model_type_key in ("film_simple", "film_complex"):
             entry["film_generator_type"] = hyperparams["film_generator_type"]
             entry["mlp_hidden"] = hyperparams["mlp_hidden"]
+        elif model_type_key == "meta":
+            entry["n_meta_tokens"] = hyperparams["n_meta_tokens"]
+            entry["num_heads"]     = hyperparams["num_heads"]
 
         try:
             loader = None if model_type_key == "std" else _get_loader()

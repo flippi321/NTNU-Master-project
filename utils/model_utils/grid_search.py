@@ -14,6 +14,7 @@ from utils.model_utils.train_eval import fit_3D, fit_feature_based_3D
 MODEL_REGISTRY = {
     "std":  ("models.unet_3d_std",  "UNet3D"),
     "film": ("models.unet_3d_film", "FiLMUNet3D"),
+    "meta": ("models.unet_3d_meta", "META_Unet3D"),
 }
 
 CROP_AXES = ((16, 10, 0), (17, 11, 17))
@@ -34,8 +35,10 @@ def _matches_filter(entry: dict, model_filter: str | None) -> bool:
         return entry["model_type"] == "film" and entry.get("film_generator_type") == "simple"
     if model_filter == "film_complex":
         return entry["model_type"] == "film" and entry.get("film_generator_type") == "complex"
+    if model_filter == "meta":
+        return entry["model_type"] == "meta"
     raise ValueError(f"Unknown model_filter: {model_filter!r}. "
-                     "Use None, 'std', 'film', 'film_simple', or 'film_complex'.")
+                     "Use None, 'std', 'film', 'film_simple', 'film_complex', or 'meta'.")
 
 
 def _build_model(entry: dict, base_channels: int, cond_dim: int = 0) -> torch.nn.Module:
@@ -46,6 +49,13 @@ def _build_model(entry: dict, base_channels: int, cond_dim: int = 0) -> torch.nn
         use_simple = entry.get("film_generator_type") == "simple"
         mlp_hidden = int(entry["mlp_hidden"])
         return cls(base=base_channels, cond_dim=cond_dim, use_simple=use_simple, mlp_hidden=mlp_hidden)
+    if model_type == "meta":
+        return cls(
+            base=base_channels,
+            cond_dim=cond_dim,
+            n_meta_tokens=int(entry["n_meta_tokens"]),
+            num_heads=int(entry["num_heads"]),
+        )
     return cls(base=base_channels)
 
 
