@@ -189,37 +189,36 @@ class FiLMUNet3D(nn.Module):
       Bottleneck:  b1, b2                channels: [16B, 16B]
       Decoder:     u4, u3, u2, u1        channels: [8B, 4B, 2B, B]
 
-    GPU split mirrors the baseline UNet3D:
-      GPU 0 — encoder + bottleneck + heavy decoder (u4, u3)
-      GPU 1 — light decoder (u2, u1) + output conv
+    Runs entirely on `device` (defaults to cuda:0 if available, else cpu).
     """
-    def __init__(self, in_ch=1, out_ch=1, base=32, cond_dim=3, use_simple: bool = False, mlp_hidden: int = 64, residual: bool = False):
+    def __init__(self, in_ch=1, out_ch=1, base=32, cond_dim=3, use_simple: bool = False,
+                 mlp_hidden: int = 64, residual: bool = False,
+                 device: torch.device | str | None = None):
         super().__init__()
         self.use_simple = use_simple
         self.residual = residual
-        self.dev0 = torch.device("cuda:0")
-        self.dev1 = torch.device("cuda:1")
+        if device is None:
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device)
 
-        # --- Encoder (GPU 0) ---
-        self.e1 = ConvBlock(in_ch, base).to(self.dev0)
-        self.e2 = Down(base, base * 2).to(self.dev0)
-        self.e3 = Down(base * 2, base * 4).to(self.dev0)
-        self.e4 = Down(base * 4, base * 8).to(self.dev0)
+        # --- Encoder ---
+        self.e1 = ConvBlock(in_ch, base).to(self.device)
+        self.e2 = Down(base, base * 2).to(self.device)
+        self.e3 = Down(base * 2, base * 4).to(self.device)
+        self.e4 = Down(base * 4, base * 8).to(self.device)
 
-        # --- Bottleneck (GPU 0) — keeps the big memory spike on the same device ---
-        self.b1 = ConvBlock(base * 8,  base * 16).to(self.dev0)
-        self.b2 = ConvBlock(base * 16, base * 16).to(self.dev0)
+        # --- Bottleneck ---
+        self.b1 = ConvBlock(base * 8,  base * 16).to(self.device)
+        self.b2 = ConvBlock(base * 16, base * 16).to(self.device)
 
-        # --- Heavy decoder (GPU 0) ---
-        self.u4 = Up(base * 16, base * 8).to(self.dev0)
-        self.u3 = Up(base * 8,  base * 4).to(self.dev0)
+        # --- Decoder ---
+        self.u4 = Up(base * 16, base * 8).to(self.device)
+        self.u3 = Up(base * 8,  base * 4).to(self.device)
+        self.u2  = Up(base * 4, base * 2).to(self.device)
+        self.u1  = Out(base * 2, base).to(self.device)
+        self.out = nn.Conv3d(base, out_ch, 1).to(self.device)
 
-        # --- Light decoder (GPU 1) ---
-        self.u2  = Up(base * 4, base * 2).to(self.dev1)
-        self.u1  = Out(base * 2, base).to(self.dev1)
-        self.out = nn.Conv3d(base, out_ch, 1).to(self.dev1)
-
-        # --- FiLM generator (GPU 0) ---
+        # --- FiLM generator ---
         # Block order: enc(e1,e2,e3,e4) + bott(b1,b2) + dec(u4,u3,u2,u1) = 10 blocks
         enc_channels  = [base, base * 2, base * 4, base * 8]
         bott_channels = [base * 16, base * 16]
@@ -229,11 +228,11 @@ class FiLMUNet3D(nn.Module):
         if use_simple:
             self.film_gen = FiLMSimpleGenerator(
                 cond_dim=cond_dim, n_blocks=len(all_channels), hidden=mlp_hidden
-            ).to(self.dev0)
+            ).to(self.device)
         else:
             self.film_gen = FiLMComplexGenerator(
                 cond_dim=cond_dim, all_channels=all_channels, hidden=mlp_hidden
-            ).to(self.dev0)
+            ).to(self.device)
 
         if self.residual:
             # Zero-init the final 1x1 conv so delta ≈ 0 at start; recon ≈ x at iter 0,
@@ -243,13 +242,12 @@ class FiLMUNet3D(nn.Module):
                 nn.init.zeros_(self.out.bias)
 
     def forward(self, x, cond):
-        films = self.film_gen(cond.to(self.dev0))
+        films = self.film_gen(cond.to(self.device))
         # films[0..3]  → encoder  (e1, e2, e3, e4)
         # films[4..5]  → bottleneck (b1, b2)
         # films[6..9]  → decoder  (u4, u3, u2, u1)
 
-        # --- Encoder + bottleneck + heavy decoder on GPU 0 ---
-        x  = x.to(self.dev0)
+        x  = x.to(self.device)
         s1 = self.e1(x,   film=films[0])
         s2, x2 = self.e2(s1, film=films[1])
         s3, x3 = self.e3(x2, film=films[2])
@@ -259,19 +257,11 @@ class FiLMUNet3D(nn.Module):
         d4 = self.u4(b,  s4, film=films[6])
         d3 = self.u3(d4, s3, film=films[7])
 
-        # --- Move only the light-decoder inputs to GPU 1 ---
-        d3 = d3.to(self.dev1)
-        s2 = s2.to(self.dev1)
-        s1 = s1.to(self.dev1)
-        f8 = (films[8][0].to(self.dev1), films[8][1].to(self.dev1))
-        f9 = (films[9][0].to(self.dev1), films[9][1].to(self.dev1))
-
-        # --- Light decoder on GPU 1 ---
-        d2 = self.u2(d3, s2, film=f8)
-        d1 = self.u1(d2, s1, film=f9)
+        d2 = self.u2(d3, s2, film=films[8])
+        d1 = self.u1(d2, s1, film=films[9])
         delta = self.out(d1)
 
         if self.residual:
             # Same contract as the residual META path: returns (recon, delta).
-            return x.to(self.dev1) + delta, delta
+            return x + delta, delta
         return delta

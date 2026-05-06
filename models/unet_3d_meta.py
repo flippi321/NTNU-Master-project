@@ -419,48 +419,47 @@ class META_Unet3D(nn.Module):
     prepended to the K/V sequences inside both branches of every META block.
     No FiLM γ/β.
 
-    GPU split (mirrors FiLMUNet3D / UNet3D):
-      dev0: backbone + projections + tokenizer + first two META blocks
-      dev1: last META block (highest resolution) + regression head
+    Runs entirely on `device` (defaults to cuda:0 if available, else cpu).
     """
     def __init__(self, in_ch=1, out_ch=1, base=32, cond_dim=3, n_meta_tokens=8,
                  p1=(2,4,4), p2=(2,4,4), p3=(2,4,4),
                  r1=(2,2,4), r2=(4,4,4), r3=(4,16,16),
-                 num_heads=4, auto_pad=True, residual=True):
+                 num_heads=4, auto_pad=True, residual=True,
+                 device: torch.device | str | None = None):
         super().__init__()
-        self.dev0 = torch.device("cuda:0")
-        self.dev1 = torch.device("cuda:1")
+        if device is None:
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device)
         self.p1, self.p2, self.p3 = p1, p2, p3
         self.auto_pad = auto_pad
         self.residual = residual
 
         channel = [base, base * 2, base * 4, base * 8, base * 16]
 
-        self.backbone = SimpleBackbone3D(in_ch=in_ch, channels=tuple(channel)).to(self.dev0)
+        self.backbone = SimpleBackbone3D(in_ch=in_ch, channels=tuple(channel)).to(self.device)
 
         # project all scales to channel[0]
-        self.proj4  = CBR3D(nIn=channel[1], nOut=channel[0], kSize=1).to(self.dev0)
-        self.proj8  = CBR3D(nIn=channel[2], nOut=channel[0], kSize=1).to(self.dev0)
-        self.proj16 = CBR3D(nIn=channel[3], nOut=channel[0], kSize=1).to(self.dev0)
-        self.proj32 = CBR3D(nIn=channel[4], nOut=channel[0], kSize=1).to(self.dev0)
+        self.proj4  = CBR3D(nIn=channel[1], nOut=channel[0], kSize=1).to(self.device)
+        self.proj8  = CBR3D(nIn=channel[2], nOut=channel[0], kSize=1).to(self.device)
+        self.proj16 = CBR3D(nIn=channel[3], nOut=channel[0], kSize=1).to(self.device)
+        self.proj32 = CBR3D(nIn=channel[4], nOut=channel[0], kSize=1).to(self.device)
 
         # Metadata path (single shared tokenizer, reused by all META blocks).
         self.tokenizer = MetadataTokenizer(
             cond_dim=cond_dim, n_tokens=n_meta_tokens, dim=channel[0]
-        ).to(self.dev0)
+        ).to(self.device)
 
-        # META blocks — first two on dev0 (deeper, smaller), last on dev1 (highest-res, heaviest).
         self.mstf32_16 = META3D(dim=channel[0], pd=p1[0], ph=p1[1], pw=p1[2],
                                 ratio_d=r1[0], ratio_h=r1[1], ratio_w=r1[2],
-                                num_heads=num_heads).to(self.dev0)
+                                num_heads=num_heads).to(self.device)
         self.mstf16_8  = META3D(dim=channel[0], pd=p2[0], ph=p2[1], pw=p2[2],
                                 ratio_d=r2[0], ratio_h=r2[1], ratio_w=r2[2],
-                                num_heads=num_heads).to(self.dev0)
+                                num_heads=num_heads).to(self.device)
         self.mstf8_4   = META3D(dim=channel[0], pd=p3[0], ph=p3[1], pw=p3[2],
                                 ratio_d=r3[0], ratio_h=r3[1], ratio_w=r3[2],
-                                num_heads=num_heads).to(self.dev1)
+                                num_heads=num_heads).to(self.device)
 
-        self.seg_head = Seg_head3D(channel[0], out_ch).to(self.dev1)
+        self.seg_head = Seg_head3D(channel[0], out_ch).to(self.device)
 
         if self.residual:
             # Zero-init the final conv so delta ≈ 0 at start; recon ≈ x at iter 0,
@@ -484,8 +483,8 @@ class META_Unet3D(nn.Module):
         return d, h, w
 
     def forward(self, x, cond):
-        x = x.to(self.dev0)
-        cond = cond.to(self.dev0)
+        x = x.to(self.device)
+        cond = cond.to(self.device)
 
         # Pad to the smallest shape that satisfies divisibility at every META scale.
         _, _, D0, H0, W0 = x.shape
@@ -497,8 +496,7 @@ class META_Unet3D(nn.Module):
             if pad_d or pad_h or pad_w:
                 x = F.pad(x, (0, pad_w, 0, pad_h, 0, pad_d))
 
-        # Metadata -> tokens (B, M, C) on dev0.
-        meta_tokens0 = self.tokenizer(cond)
+        meta_tokens = self.tokenizer(cond)
 
         # Backbone -> 4 scales.
         feat4, feat8, feat16, feat32 = self.backbone(x)
@@ -509,17 +507,14 @@ class META_Unet3D(nn.Module):
 
         # Top-down fusion with metadata-aware META refinement.
         feat32 = F.interpolate(feat32, scale_factor=2, mode="trilinear", align_corners=True)
-        feat16 = self.mstf32_16(feat16 + feat32, meta_tokens=meta_tokens0)
+        feat16 = self.mstf32_16(feat16 + feat32, meta_tokens=meta_tokens)
 
         feat16 = F.interpolate(feat16, scale_factor=2, mode="trilinear", align_corners=True)
-        feat8  = self.mstf16_8(feat8 + feat16, meta_tokens=meta_tokens0)
+        feat8  = self.mstf16_8(feat8 + feat16, meta_tokens=meta_tokens)
 
         feat8 = F.interpolate(feat8, scale_factor=2, mode="trilinear", align_corners=True)
 
-        # Move to dev1 for the largest META + regression head.
-        feat4 = (feat4 + feat8).to(self.dev1)
-        meta_tokens1 = meta_tokens0.to(self.dev1)
-        feat4 = self.mstf8_4(feat4, meta_tokens=meta_tokens1)
+        feat4 = self.mstf8_4(feat4 + feat8, meta_tokens=meta_tokens)
 
         delta = self.seg_head(feat4)
 
@@ -529,5 +524,5 @@ class META_Unet3D(nn.Module):
         if self.residual:
             # Residual head: predict only the change from Hunt-3 to Hunt-4.
             # Same contract as ResidualUNet3D: returns (recon, delta).
-            return x[:, :, :D0, :H0, :W0].to(self.dev1) + delta, delta
+            return x[:, :, :D0, :H0, :W0] + delta, delta
         return delta

@@ -179,7 +179,7 @@ def _eval_on_pairs(
     if not pairs:
         return None
 
-    data_device = getattr(model, "dev0", device)
+    data_device = getattr(model, "device", getattr(model, "dev0", device))
     dc = DataConverter()
     losses = []
 
@@ -232,7 +232,7 @@ def _run_one_trial(
     sched_type = hyperparams["lr_scheduler"]
 
     if model_type_key == "std":
-        model     = _build_model(hyperparams, base_channels=base_channels)
+        model     = _build_model(hyperparams, base_channels=base_channels, device=device)
         optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd, betas=betas)
         scheduler = _build_scheduler(optimizer, sched_type, epochs)
         _, loss_history, _, best_model, best_val_loss = fit_3D(
@@ -251,7 +251,8 @@ def _run_one_trial(
             max_total_runs=max_total_runs,
         )
     else:
-        model     = _build_model(hyperparams, base_channels=base_channels, cond_dim=combined_loader.n_features)
+        model     = _build_model(hyperparams, base_channels=base_channels,
+                                 cond_dim=combined_loader.n_features, device=device)
         optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd, betas=betas)
         scheduler = _build_scheduler(optimizer, sched_type, epochs)
         _, loss_history, _, best_model, best_val_loss = fit_feature_based_3D(
@@ -395,18 +396,22 @@ def run_bayes(
         return _combined_loader
 
     completed = 0
-    
+
+    studies: dict[str, optuna.Study] = {
+        mt: optuna.create_study(
+            study_name=STUDY_NAMES[mt],
+            storage=storage,
+            direction="minimize",
+            sampler=optuna.samplers.TPESampler(seed=None),
+            load_if_exists=True,
+        )
+        for mt in active_types
+    }
+
     for i in range(n_trials):
         # Round-robin across active model types
         model_type_key = active_types[i % len(active_types)]
-
-        study = optuna.create_study(
-            study_name=STUDY_NAMES[model_type_key],
-            storage=storage,
-            direction="minimize",
-            sampler=optuna.samplers.TPESampler(seed=42),
-            load_if_exists=True,
-        )
+        study = studies[model_type_key]
 
         trial = study.ask()
         hyperparams = _suggest_hyperparams(trial, model_type_key)
@@ -552,9 +557,10 @@ def select_bayes_champions(
                 _combined_loader = CombinedMetadataUtils(
                     csv_path=os.path.join(metadata_root, "metadata_combined.csv")
                 )
-            model = _build_model(entry, base_channels=base_channels, cond_dim=_combined_loader.n_features)
+            model = _build_model(entry, base_channels=base_channels,
+                                 cond_dim=_combined_loader.n_features, device=device)
         else:
-            model = _build_model(entry, base_channels=base_channels)
+            model = _build_model(entry, base_channels=base_channels, device=device)
 
         model.load_state_dict(torch.load(model_path, map_location="cpu"))
         model.eval()
