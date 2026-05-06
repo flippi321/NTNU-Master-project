@@ -193,9 +193,10 @@ class FiLMUNet3D(nn.Module):
       GPU 0 — encoder + bottleneck + heavy decoder (u4, u3)
       GPU 1 — light decoder (u2, u1) + output conv
     """
-    def __init__(self, in_ch=1, out_ch=1, base=32, cond_dim=3, use_simple: bool = False, mlp_hidden: int = 64):
+    def __init__(self, in_ch=1, out_ch=1, base=32, cond_dim=3, use_simple: bool = False, mlp_hidden: int = 64, residual: bool = False):
         super().__init__()
         self.use_simple = use_simple
+        self.residual = residual
         self.dev0 = torch.device("cuda:0")
         self.dev1 = torch.device("cuda:1")
 
@@ -234,6 +235,13 @@ class FiLMUNet3D(nn.Module):
                 cond_dim=cond_dim, all_channels=all_channels, hidden=mlp_hidden
             ).to(self.dev0)
 
+        if self.residual:
+            # Zero-init the final 1x1 conv so delta ≈ 0 at start; recon ≈ x at iter 0,
+            # giving the SSIM-L1 loss a Hunt-3-equals-Hunt-4 baseline to depart from.
+            nn.init.zeros_(self.out.weight)
+            if self.out.bias is not None:
+                nn.init.zeros_(self.out.bias)
+
     def forward(self, x, cond):
         films = self.film_gen(cond.to(self.dev0))
         # films[0..3]  → encoder  (e1, e2, e3, e4)
@@ -261,4 +269,9 @@ class FiLMUNet3D(nn.Module):
         # --- Light decoder on GPU 1 ---
         d2 = self.u2(d3, s2, film=f8)
         d1 = self.u1(d2, s1, film=f9)
-        return self.out(d1)
+        delta = self.out(d1)
+
+        if self.residual:
+            # Same contract as the residual META path: returns (recon, delta).
+            return x.to(self.dev1) + delta, delta
+        return delta
