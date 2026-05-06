@@ -74,9 +74,9 @@ def fit_3D(
       fresh weights if the threshold is not met, up to max_total_runs total attempts.
     """
 
-    # Models that self-manage GPU placement expose dev0 as their input device.
-    # Always load data there rather than using the caller-supplied `device`.
-    data_device = getattr(model, 'dev0', device)
+    # Models that self-manage placement expose either `device` (single-GPU
+    # FiLM/Meta) or `dev0` (multi-GPU std). Honor those before falling back.
+    data_device = getattr(model, 'device', getattr(model, 'dev0', device))
 
     optimizer = optimizer or build_optimizer(model)
 
@@ -272,9 +272,9 @@ def fit_feature_based_3D(
       fresh weights if the threshold is not met, up to max_total_runs total attempts.
     """
 
-    # Models that self-manage GPU placement expose dev0 as their input device.
-    # Always load data there rather than using the caller-supplied `device`.
-    data_device = getattr(model, 'dev0', device)
+    # Models that self-manage placement expose either `device` (single-GPU
+    # FiLM/Meta) or `dev0` (multi-GPU std). Honor those before falling back.
+    data_device = getattr(model, 'device', getattr(model, 'dev0', device))
 
     optimizer = optimizer or build_optimizer(model)
     device_gpu_available = device.type == "cuda" or device.type == "cuda:0" or device.type == "cuda:1"

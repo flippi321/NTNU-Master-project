@@ -41,7 +41,12 @@ def _matches_filter(entry: dict, model_filter: str | None) -> bool:
                      "Use None, 'std', 'film', 'film_simple', 'film_complex', or 'meta'.")
 
 
-def _build_model(entry: dict, base_channels: int, cond_dim: int = 0) -> torch.nn.Module:
+def _build_model(
+    entry: dict,
+    base_channels: int,
+    cond_dim: int = 0,
+    device: torch.device | None = None,
+) -> torch.nn.Module:
     model_type = entry["model_type"]
     module_name, class_name = MODEL_REGISTRY[model_type]
     cls = getattr(importlib.import_module(module_name), class_name)
@@ -50,13 +55,14 @@ def _build_model(entry: dict, base_channels: int, cond_dim: int = 0) -> torch.nn
         mlp_hidden = int(entry["mlp_hidden"])
         residual   = bool(entry.get("residual", False))
         return cls(base=base_channels, cond_dim=cond_dim, use_simple=use_simple,
-                   mlp_hidden=mlp_hidden, residual=residual)
+                   mlp_hidden=mlp_hidden, residual=residual, device=device)
     if model_type == "meta":
         return cls(
             base=base_channels,
             cond_dim=cond_dim,
             n_meta_tokens=int(entry["n_meta_tokens"]),
             num_heads=int(entry["num_heads"]),
+            device=device,
         )
     return cls(base=base_channels)
 
@@ -337,12 +343,13 @@ def select_champions(
                 _combined_loader = CombinedMetadataUtils(
                     csv_path=os.path.join(metadata_root, "metadata_combined.csv")
                 )
-            model = _build_model(entry, base_channels=base_channels, cond_dim=_combined_loader.n_features)
+            model = _build_model(entry, base_channels=base_channels,
+                                 cond_dim=_combined_loader.n_features, device=device)
         else:
-            model = _build_model(entry, base_channels=base_channels)
+            model = _build_model(entry, base_channels=base_channels, device=device)
 
-        # Load weights via CPU so each submodule receives data at its own device
-        # (encoder → cuda:0, decoder → cuda:1) without consolidating to one GPU.
+        # Load via CPU so the standard UNet's split submodules each pick up
+        # weights at their own device; FiLM/Meta now live on a single device.
         model.load_state_dict(torch.load(model_path, map_location='cpu'))
         model.eval()
         champions[key] = model

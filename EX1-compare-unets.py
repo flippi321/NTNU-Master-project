@@ -71,7 +71,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     split.add_argument("--val-split",   type=float, default=0.15)
 
     bayes = p.add_argument_group("bayesian search")
-    bayes.add_argument("--epochs",              type=int,   default=4000)
+    bayes.add_argument("--epochs",              type=int,   default=5000)
     bayes.add_argument("--base-channels",       type=int,   default=16)
     bayes.add_argument("--restart-threshold",   type=float, default=0.2)
     bayes.add_argument("--restart-check-epoch", type=int,   default=500)

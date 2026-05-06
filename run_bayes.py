@@ -99,13 +99,19 @@ def main():
         "--max_total_runs", type=int, default=3,
         help="Maximum restart attempts per trial (default: 3)",
     )
+    parser.add_argument(
+        "--device", type=str, default=None,
+        help="Torch device string (e.g. 'cuda:0', 'cuda:1', 'cpu'). Auto-detected if unset.",
+    )
     args = parser.parse_args()
 
     if args.setup:
         setup_check()
         return
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device(args.device) if args.device else torch.device(
+        "cuda:0" if torch.cuda.is_available() else "cpu"
+    )
     print(f"Device: {device}")
 
     init_yaml(
