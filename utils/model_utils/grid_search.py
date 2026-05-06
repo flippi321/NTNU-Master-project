@@ -48,7 +48,9 @@ def _build_model(entry: dict, base_channels: int, cond_dim: int = 0) -> torch.nn
     if model_type == "film":
         use_simple = entry.get("film_generator_type") == "simple"
         mlp_hidden = int(entry["mlp_hidden"])
-        return cls(base=base_channels, cond_dim=cond_dim, use_simple=use_simple, mlp_hidden=mlp_hidden)
+        residual   = bool(entry.get("residual", False))
+        return cls(base=base_channels, cond_dim=cond_dim, use_simple=use_simple,
+                   mlp_hidden=mlp_hidden, residual=residual)
     if model_type == "meta":
         return cls(
             base=base_channels,

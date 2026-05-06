@@ -19,11 +19,15 @@ from utils.mri.data_converter import DataConverter
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 STUDY_NAMES: dict[str, str] = {
-    "film_simple":  "bayes_film_simple",
-    "film_complex": "bayes_film_complex",
-    "std":          "bayes_std",
-    "meta":         "bayes_meta",
+    "film_simple":      "bayes_film_simple",
+    "film_complex":     "bayes_film_complex",
+    "film_simple_res":  "bayes_film_simple_res",
+    "film_complex_res": "bayes_film_complex_res",
+    "std":              "bayes_std",
+    "meta":             "bayes_meta",
 }
+
+FILM_KEYS = ("film_simple", "film_complex", "film_simple_res", "film_complex_res")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -35,7 +39,8 @@ def _type_key_from_entry(entry: dict) -> str:
         return "std"
     if entry["model_type"] == "meta":
         return "meta"
-    return f"film_{entry.get('film_generator_type', 'unknown')}"
+    suffix = "_res" if entry.get("residual", False) else ""
+    return f"film_{entry.get('film_generator_type', 'unknown')}{suffix}"
 
 
 def _suggest_hyperparams(trial: optuna.Trial, model_type_key: str) -> dict:
@@ -61,9 +66,12 @@ def _suggest_hyperparams(trial: optuna.Trial, model_type_key: str) -> dict:
         params["n_meta_tokens"] = trial.suggest_int("n_meta_tokens", 4, 16, log=True)
         params["num_heads"]     = trial.suggest_categorical("num_heads", [2, 4, 8])
     else:
-        gen_type = "simple" if model_type_key == "film_simple" else "complex"
+        is_res   = model_type_key.endswith("_res")
+        base_key = model_type_key[: -len("_res")] if is_res else model_type_key
+        gen_type = "simple" if base_key == "film_simple" else "complex"
         params["model_type"] = "film"
         params["film_generator_type"] = gen_type
+        params["residual"] = is_res
         params["mlp_hidden"] = trial.suggest_int("mlp_hidden", 32, 256, log=True)
 
     return params
@@ -337,7 +345,9 @@ def run_bayes(
     test_pairs       : held-out pairs evaluated with the best model after each trial
     n_trials         : total NEW trials to run this session across all active types
     checkpoint_every : how often (in epochs) to run validation inside each trial
-    model_filter     : None (all types), 'std', 'film_simple', 'film_complex', or 'meta'
+    model_filter     : None (all types) or one of
+                       'std', 'film_simple', 'film_complex',
+                       'film_simple_res', 'film_complex_res', 'meta'
     stop_after_first : run exactly one trial then return
 
     Returns
@@ -368,7 +378,8 @@ def run_bayes(
     if not active_types:
         raise ValueError(
             f"Unknown model_filter: {model_filter!r}. "
-            "Use None, 'std', 'film_simple', 'film_complex', or 'meta'."
+            "Use None, 'std', 'film_simple', 'film_complex', "
+            "'film_simple_res', 'film_complex_res', or 'meta'."
         )
 
     storage = f"sqlite:///{db_path}"
@@ -402,9 +413,10 @@ def run_bayes(
         trial_id = _make_trial_id(model_type_key, trial.number + 1)
 
         print(f"\n[bayes_search] Starting {trial_id}")
-        if model_type_key in ("film_simple", "film_complex"):
+        if model_type_key in FILM_KEYS:
             extra_info = (
                 f"  film_type={hyperparams['film_generator_type']}"
+                f"  residual={hyperparams['residual']}"
                 f"  mlp_hidden={hyperparams.get('mlp_hidden')}"
             )
         elif model_type_key == "meta":
@@ -431,9 +443,10 @@ def run_bayes(
             "beta2": hyperparams["beta2"],
             "lr_scheduler": hyperparams["lr_scheduler"],
         }
-        if model_type_key in ("film_simple", "film_complex"):
+        if model_type_key in FILM_KEYS:
             entry["film_generator_type"] = hyperparams["film_generator_type"]
             entry["mlp_hidden"] = hyperparams["mlp_hidden"]
+            entry["residual"] = hyperparams["residual"]
         elif model_type_key == "meta":
             entry["n_meta_tokens"] = hyperparams["n_meta_tokens"]
             entry["num_heads"]     = hyperparams["num_heads"]
@@ -490,7 +503,8 @@ def get_bayes_champion_entries(yaml_file: str) -> dict[str, dict]:
 
     Returns
     -------
-    dict mapping type key ('std', 'film_simple', 'film_complex') -> entry dict
+    dict mapping type key ('std', 'film_simple', 'film_complex',
+    'film_simple_res', 'film_complex_res', 'meta') -> entry dict
     """
     config = _load_yaml(yaml_file)
     best: dict[str, dict] = {}

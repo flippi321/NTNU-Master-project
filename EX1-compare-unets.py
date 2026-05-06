@@ -78,7 +78,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     bayes.add_argument("--max-total-runs",      type=int,   default=3)
     bayes.add_argument("--n-trials",            type=int,   default=10)
     bayes.add_argument("--model-filter",        type=str,   default=None,
-                       choices=["std", "film_simple", "film_complex", "meta"],
+                       choices=["std", "film_simple", "film_complex",
+                                "film_simple_res", "film_complex_res", "meta"],
                        help="Restrict Bayes to one model type. Default: round-robin across all.")
 
     return p.parse_args(argv)
