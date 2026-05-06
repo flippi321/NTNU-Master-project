@@ -333,7 +333,7 @@ def run_bayes(
     Parameters
     ----------
     yaml_file        : path to bayes_search.yaml (human-readable audit log)
-    db_path          : path to SQLite file, e.g. "data/bayes_search.db"
+    db_path          : path to SQLite file, e.g. "out/bayes_search/bayes_search.db"
     test_pairs       : held-out pairs evaluated with the best model after each trial
     n_trials         : total NEW trials to run this session across all active types
     checkpoint_every : how often (in epochs) to run validation inside each trial

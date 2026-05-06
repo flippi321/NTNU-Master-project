@@ -52,7 +52,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                        help="FreeSurfer/FastSurfer subject directory passed to generate_all_csvs.")
     paths.add_argument("--splits-path",     default="data/metadata/splits.json")
     paths.add_argument("--bayes-yaml",      default="out/bayes_search/bayes_search.yaml")
-    paths.add_argument("--bayes-db",        default="data/bayes_search.db")
+    paths.add_argument("--bayes-db",        default="out/bayes_search/bayes_search.db")
     paths.add_argument("--bayes-out-dir",   default="out/bayes_search")
 
     flow = p.add_argument_group("flow control")

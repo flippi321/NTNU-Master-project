@@ -27,8 +27,8 @@ from utils.mri.data_loader import DataLoader
 from utils.metadata.combined_metadata_utils import CombinedMetadataUtils
 from utils.metadata.stratified_splitter import StratifiedSplitter
 
-YAML_FILE     = "data/bayes_search.yaml"
-DB_PATH       = "data/bayes_search.db"
+YAML_FILE     = "out/bayes_search/bayes_search.yaml"
+DB_PATH       = "out/bayes_search/bayes_search.db"
 DATA_ROOT     = "data"
 METADATA_ROOT = "data/metadata"
 OUT_DIR       = "out/bayes_search"
