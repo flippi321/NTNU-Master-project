@@ -134,6 +134,10 @@ class CombinedMetadataUtils:
             for id_ in ids
         ]
         return np.stack(rows)
+    
+    def get_all(self) -> np.ndarray:
+        self._load()
+        return self._features
 
     @property
     def feature_names(self) -> list[str]:
