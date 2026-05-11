@@ -1,8 +1,27 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 from einops import rearrange
+
+# When set, print attention/gate stats whenever they fall outside safe ranges.
+# Toggle via env var META_DEBUG_NAN=1, or by mutating this flag at runtime.
+META_DEBUG_NAN: bool = os.environ.get("META_DEBUG_NAN", "0") == "1"
+# How often to emit a stats line even when nothing looks suspicious. 0 = never.
+# Set via env var META_DEBUG_STRIDE; useful as a baseline against which the bad
+# iters stand out. Counter is shared across all attention/gate call sites.
+META_DEBUG_STRIDE: int = int(os.environ.get("META_DEBUG_STRIDE", "0"))
+_META_DEBUG_STEP: int = 0
+
+
+def _meta_debug_should_emit() -> bool:
+    """Return True if we should emit a periodic baseline stats line this call."""
+    global _META_DEBUG_STEP
+    _META_DEBUG_STEP += 1
+    if META_DEBUG_STRIDE <= 0:
+        return False
+    return (_META_DEBUG_STEP % META_DEBUG_STRIDE) == 0
 
 # ============================================================
 # 3D building blocks (replace 2D conv/BN/interp with 3D)
@@ -131,6 +150,21 @@ class Self_Attention3D(nn.Module):
         v_red = self.norm_v(v_red)
 
         attn = (q @ k_red.transpose(-2, -1)) * self.scale
+        if META_DEBUG_NAN:
+            with torch.no_grad():
+                a32 = attn.float()
+                amax, amin = float(a32.max()), float(a32.min())
+                bad = (not torch.isfinite(a32).all().item()) or amax > 1e3 or amin < -1e3
+                if bad or _meta_debug_should_emit():
+                    qmax = float(q.float().abs().max())
+                    kmax = float(k_red.float().abs().max())
+                    tag = "BAD" if bad else "ok"
+                    print(
+                        f"[meta_dbg] {tag} GLOBAL attn pre-softmax "
+                        f"min={amin:.3g} max={amax:.3g} "
+                        f"|q|max={qmax:.3g} |k|max={kmax:.3g} "
+                        f"Np={k_red.shape[-2]} N={q.shape[-2]}"
+                    )
         # Force softmax to fp32 — under autocast the inputs are fp16 and softmax
         # of large attention scores overflows to NaN.
         attn = self.attn_drop(attn.float().softmax(dim=-1).to(q.dtype))
@@ -208,6 +242,21 @@ class Self_Attention_local3D(nn.Module):
             v = torch.cat([m_v, v], dim=3)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
+        if META_DEBUG_NAN:
+            with torch.no_grad():
+                a32 = attn.float()
+                amax, amin = float(a32.max()), float(a32.min())
+                bad = (not torch.isfinite(a32).all().item()) or amax > 1e3 or amin < -1e3
+                if bad or _meta_debug_should_emit():
+                    qmax = float(q.float().abs().max())
+                    kmax = float(k.float().abs().max())
+                    tag = "BAD" if bad else "ok"
+                    print(
+                        f"[meta_dbg] {tag} LOCAL  attn pre-softmax "
+                        f"min={amin:.3g} max={amax:.3g} "
+                        f"|q|max={qmax:.3g} |k|max={kmax:.3g} "
+                        f"R={q.shape[1]} Np={k.shape[-2]}"
+                    )
         # fp32 softmax — see Self_Attention3D for rationale.
         attn = self.attn_drop(attn.float().softmax(dim=-1).to(q.dtype))
 
@@ -288,7 +337,23 @@ class META3D(nn.Module):
         glo_y = self.glo_attn(glo_x, d, h, w, meta_tokens=meta_tokens)
         glo_y = glo_y.transpose(1, 2).reshape(b, c, d, h, w)
 
-        gate = torch.sigmoid(loc_y + glo_y)
+        gate_logit = loc_y + glo_y
+        gate = torch.sigmoid(gate_logit)
+        if META_DEBUG_NAN:
+            with torch.no_grad():
+                g32 = gate.float()
+                lg32 = gate_logit.float()
+                # "Saturated" gate: indistinguishable from 0 or 1 in fp32.
+                sat = ((g32 < 1e-7) | (g32 > 1 - 1e-7)).float().mean().item()
+                lmax, lmin = float(lg32.max()), float(lg32.min())
+                bad = (not torch.isfinite(lg32).all().item()) or sat > 0.5 or lmax > 30 or lmin < -30
+                if bad or _meta_debug_should_emit():
+                    tag = "BAD" if bad else "ok"
+                    print(
+                        f"[meta_dbg] {tag} GATE   logit min={lmin:.3g} max={lmax:.3g} "
+                        f"saturated_frac={sat:.3f} "
+                        f"shape={tuple(gate.shape)}"
+                    )
         out = x * gate
         if feature:
             return loc_y, glo_y, out
@@ -462,10 +527,10 @@ class META_Unet3D(nn.Module):
         self.seg_head = Seg_head3D(channel[0], out_ch).to(self.device)
 
         if self.residual:
-            # Zero-init the final conv so delta ≈ 0 at start; recon ≈ x at iter 0,
-            # which is much closer to Hunt-4 than a random output and gives the
-            # SSIM-L1 loss a reasonable starting point.
-            nn.init.zeros_(self.seg_head.conv2.weight)
+            # Small-scale init so delta is small (recon ≈ x at iter 0) but NOT exactly
+            # zero. Exact zero-init makes forward(x) = x for all hyperparams and blocks
+            # gradient flow into the inner network — Optuna can't search through that.
+            nn.init.normal_(self.seg_head.conv2.weight, mean=0.0, std=1e-3)
             if self.seg_head.conv2.bias is not None:
                 nn.init.zeros_(self.seg_head.conv2.bias)
 

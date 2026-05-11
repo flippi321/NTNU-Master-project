@@ -235,9 +235,10 @@ class FiLMUNet3D(nn.Module):
             ).to(self.device)
 
         if self.residual:
-            # Zero-init the final 1x1 conv so delta ≈ 0 at start; recon ≈ x at iter 0,
-            # giving the SSIM-L1 loss a Hunt-3-equals-Hunt-4 baseline to depart from.
-            nn.init.zeros_(self.out.weight)
+            # Small-scale init so delta is small (recon ≈ x at iter 0) but NOT exactly
+            # zero. Exact zero-init makes forward(x) = x for all hyperparams and blocks
+            # gradient flow into the inner network — Optuna can't search through that.
+            nn.init.normal_(self.out.weight, mean=0.0, std=1e-3)
             if self.out.bias is not None:
                 nn.init.zeros_(self.out.bias)
 

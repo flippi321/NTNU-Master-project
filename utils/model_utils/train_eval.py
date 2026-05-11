@@ -36,11 +36,33 @@ def get_middle_slice_3D(volume: torch.Tensor | np.ndarray):
     sl = t[0, 0, :, :, mid]
     return sl.clamp(0, 1).numpy()
 
+# Track which patient paths we've already warned about for non-finite metadata,
+# so a 485-patient training run doesn't print the same message hundreds of times.
+_NAN_COND_WARNED: set[str] = set()
+
+
 def get_metadata_features(loader: CombinedMetadataUtils, path: str) -> torch.Tensor:
     features = loader.get(path)
     if features is None:
         features = np.zeros(loader.n_features, dtype=np.float32)
         print(f"Warning: no metadata features found for {path}, using zeros.")
+    else:
+        # Some patients have NaN/inf entries in the combined metadata CSV (e.g.
+        # missing FastSurfer columns). Letting them through corrupts the model
+        # the first time that patient is sampled — MetadataTokenizer.mlp(cond)
+        # produces NaN tokens, NaN propagates into K/V, and the params turn
+        # NaN permanently. Sanitize at the boundary; warn once per patient.
+        features = np.asarray(features, dtype=np.float32)
+        bad_mask = ~np.isfinite(features)
+        if bad_mask.any():
+            if path not in _NAN_COND_WARNED:
+                _NAN_COND_WARNED.add(path)
+                bad_idx = np.where(bad_mask)[0].tolist()
+                print(
+                    f"Warning: non-finite metadata features for {path} "
+                    f"at indices {bad_idx} — replacing with 0."
+                )
+            features = np.where(bad_mask, 0.0, features).astype(np.float32)
     return torch.tensor(features, dtype=torch.float32)
 
 # ---------------------------------------------
@@ -168,7 +190,10 @@ def fit_3D(
                 saved_snapshots.append({"iter": i, "x": x_np, "y": y_np, "recon": recon_np, "loss": capped_loss})
 
             # --- Validation ---
-            if (i % checkpoint_every == 0 or i == epochs - 1):
+            # Guard against i == 0: validating before any meaningful training would
+            # capture the near-untrained baseline as best_val_loss and any later
+            # checkpoint would have to beat that to update.
+            if i > 0 and (i % checkpoint_every == 0 or i == epochs - 1):
                 # Check if we got new best
                 if len(validation_pairs) > 0:
                     model.eval()
@@ -261,6 +286,8 @@ def fit_feature_based_3D(
     restart_threshold: float | None = None,
     restart_check_epoch: int = 250,
     max_total_runs: int = 3,
+    debug_nan: bool = False,
+    use_autocast: bool = True,
 ):
     """
     Train a 3D model on full volumes using HuntDataLoader.
@@ -293,7 +320,8 @@ def fit_feature_based_3D(
             print(f"[restart] Starting run {run + 1}/{total_runs} with fresh random weights.")
 
         model.train()
-        scaler = torch.GradScaler(enabled=device_gpu_available, device=device)
+        amp_enabled = device_gpu_available and use_autocast
+        scaler = torch.GradScaler(enabled=amp_enabled, device=device)
         restart_triggered = False
         restart_checked = False
         base_desc = "Training 3D U-Net with Features"
@@ -325,7 +353,7 @@ def fit_feature_based_3D(
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.autocast(enabled=device_gpu_available, device_type=device.type):
+            with torch.autocast(enabled=amp_enabled, device_type=device.type):
                 out = model(x, cond)
 
                 # Res unet returns delta as well, we only need the recon
@@ -344,11 +372,67 @@ def fit_feature_based_3D(
                 # TODO Sjekk hvem av disse som er tilfelle ved ssim
                 loss = crit_out[0] if isinstance(crit_out, (tuple, list)) else crit_out
 
+            # --- NaN diagnostic: check forward output and loss ---
+            # Skip the entire backward/step path if the forward already produced
+            # NaN/inf — we have nothing useful to backprop and `optimizer.step()`
+            # would corrupt every parameter. Note we must NOT call
+            # `scaler.update()` here because no `scaler.step()` was made this iter
+            # (PyTorch raises a RuntimeError in that case).
+            if debug_nan:
+                yhat_bad = bool(torch.isnan(y_hat).any().item() or torch.isinf(y_hat).any().item())
+                loss_bad = not bool(torch.isfinite(loss).item())
+                if yhat_bad or loss_bad:
+                    with torch.no_grad():
+                        x_min, x_max = float(x.min()), float(x.max())
+                        c_min, c_max = float(cond.min()), float(cond.max())
+                        c_mean, c_std = float(cond.mean()), float(cond.std())
+                        if torch.isfinite(y_hat).any():
+                            yh_finite = y_hat[torch.isfinite(y_hat)]
+                            yh_stats = (float(yh_finite.min()), float(yh_finite.max()))
+                        else:
+                            yh_stats = (float("nan"), float("nan"))
+                    print(
+                        f"[debug_nan] iter={i} run={run+1} "
+                        f"yhat_bad={yhat_bad} loss_bad={loss_bad} "
+                        f"loss={float(loss) if torch.isfinite(loss).item() else 'nan/inf'} "
+                        f"x=[{x_min:.3g},{x_max:.3g}] "
+                        f"cond=[{c_min:.3g},{c_max:.3g}] mean={c_mean:.3g} std={c_std:.3g} "
+                        f"yhat_finite_range={yh_stats} "
+                        f"scaler_scale={float(scaler.get_scale())}"
+                    )
+                    loss_history.append(float("nan"))
+                    optimizer.zero_grad(set_to_none=True)
+                    del x_full, y_full, x, y, cond, out, y_hat, crit_out, loss
+                    if device_gpu_available:
+                        torch.cuda.synchronize()
+                    continue
+
             capped_loss = cap_logged_loss(loss)
             loss_history.append(capped_loss)
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
+
+            # --- NaN diagnostic: scan gradients before clip + step ---
+            # We only LOG here. `scaler.step(optimizer)` already skips the
+            # optimizer step when any grad is inf/NaN — we just want to know
+            # which parameter(s) went bad first.
+            if debug_nan:
+                bad_grad_params = []
+                for name, p in model.named_parameters():
+                    if p.grad is None:
+                        continue
+                    if not torch.isfinite(p.grad).all():
+                        bad_grad_params.append(name)
+                        if len(bad_grad_params) >= 5:
+                            break
+                if bad_grad_params:
+                    print(
+                        f"[debug_nan] iter={i} run={run+1} non-finite grads in: "
+                        f"{bad_grad_params} (and possibly more) "
+                        f"scaler_scale={float(scaler.get_scale())}"
+                    )
+
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
@@ -378,12 +462,17 @@ def fit_feature_based_3D(
                 torch.cuda.synchronize()
 
             # --- Validation ---
-            if (i % checkpoint_every == 0 or i == epochs - 1) and len(validation_pairs) > 0:
+            # See note in fit_3D: skip i == 0 so best_val_loss isn't pinned to a
+            # near-untrained baseline.
+            if i > 0 and (i % checkpoint_every == 0 or i == epochs - 1) and len(validation_pairs) > 0:
                 model.eval()
                 val_losses = []
+                # Phase 1d: count non-finite val losses so the restart line
+                # ("val_loss=inf > threshold=...") has explanatory context.
+                bad_val_count = 0
 
                 with torch.no_grad():
-                    for vx_path, vy_path in validation_pairs:
+                    for pair_idx, (vx_path, vy_path) in enumerate(validation_pairs):
                         val_x = dataConverter.load_path_as_tensor(vx_path, data_device)
                         val_y = dataConverter.load_path_as_tensor(vy_path, data_device)
 
@@ -393,18 +482,41 @@ def fit_feature_based_3D(
 
                         vcond = get_metadata_features(metadata_loader, vx_path).unsqueeze(0).to(data_device)
 
-                        with torch.autocast(enabled=device_gpu_available, device_type=device.type):
+                        with torch.autocast(enabled=amp_enabled, device_type=device.type):
                             vout = model(val_x, vcond)
                             vy_hat = vout[0] if isinstance(vout, (tuple, list)) else vout
                             vcrit_out = loss_func(vy_hat, val_y)
                             vloss = vcrit_out[0] if isinstance(vcrit_out, (tuple, list)) else vcrit_out
 
-                        val_losses.append(float(vloss.item()))
+                        vloss_val = float(vloss.item())
+                        if debug_nan and not np.isfinite(vloss_val):
+                            bad_val_count += 1
+                            if bad_val_count <= 3:
+                                if torch.isfinite(vy_hat).any():
+                                    yh_finite = vy_hat[torch.isfinite(vy_hat)]
+                                    yh_stats = (float(yh_finite.min()), float(yh_finite.max()))
+                                else:
+                                    yh_stats = (float("nan"), float("nan"))
+                                print(
+                                    f"[debug_nan] val iter={i} run={run+1} "
+                                    f"pair_idx={pair_idx} vx={vx_path} "
+                                    f"vloss={vloss_val} "
+                                    f"vy_hat_finite_range={yh_stats} "
+                                    f"vcond=[{float(vcond.min()):.3g},{float(vcond.max()):.3g}] "
+                                    f"mean={float(vcond.mean()):.3g} std={float(vcond.std()):.3g}"
+                                )
+                        val_losses.append(vloss_val)
                         del val_x, val_y, vcond, vout, vy_hat, vcrit_out, vloss
 
                 if device_gpu_available:
                     torch.cuda.empty_cache()
                 avg_loss = float(np.mean(val_losses)) if val_losses else np.inf
+                if debug_nan and (bad_val_count > 0 or not np.isfinite(avg_loss)):
+                    print(
+                        f"[debug_nan] val iter={i} run={run+1} "
+                        f"non_finite_pairs={bad_val_count}/{len(val_losses)} "
+                        f"avg_loss={avg_loss}"
+                    )
                 if avg_loss < best_val_loss:
                     if not hide_progress:
                         prog_bar.set_postfix_str(f"Best loss on val {avg_loss:.6f}, (Iter {i})")

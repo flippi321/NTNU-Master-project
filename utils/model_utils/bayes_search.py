@@ -255,6 +255,17 @@ def _run_one_trial(
                                  cond_dim=combined_loader.n_features, device=device)
         optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd, betas=betas)
         scheduler = _build_scheduler(optimizer, sched_type, epochs)
+
+        # Diagnostic toggles for the meta NaN investigation. Both default to the
+        # production behavior; flip via env var when running a debug trial:
+        #   META_DEBUG_NAN=1     -> NaN/inf detection in fit_feature_based_3D
+        #                           AND attention/gate stats in models/unet_3d_meta.py
+        #   META_NO_AUTOCAST=1   -> disable mixed precision for the meta trial
+        # Only takes effect on the meta branch — FILM trials are unchanged.
+        is_meta = model_type_key == "meta"
+        debug_nan = is_meta and os.environ.get("META_DEBUG_NAN", "0") == "1"
+        use_autocast = not (is_meta and os.environ.get("META_NO_AUTOCAST", "0") == "1")
+
         _, loss_history, _, best_model, best_val_loss = fit_feature_based_3D(
             model=model,
             device=device,
@@ -270,6 +281,8 @@ def _run_one_trial(
             restart_threshold=restart_threshold,
             restart_check_epoch=restart_check_epoch,
             max_total_runs=max_total_runs,
+            debug_nan=debug_nan,
+            use_autocast=use_autocast,
         )
 
     model_path = os.path.join(out_dir, f"{trial_id}_({best_val_loss:.4f}).pth")
