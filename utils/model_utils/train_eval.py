@@ -44,8 +44,12 @@ _NAN_COND_WARNED: set[str] = set()
 def get_metadata_features(loader: CombinedMetadataUtils, path: str) -> torch.Tensor:
     features = loader.get(path)
     if features is None:
-        features = np.zeros(loader.n_features, dtype=np.float32)
-        print(f"Warning: no metadata features found for {path}, using zeros.")
+        # Fail loudly. Silently substituting zeros lets a coverage gap quietly
+        # turn off conditioning for a subset of patients — run_bayes runs a
+        # _assert_metadata_coverage pre-flight so reaching this branch is a bug.
+        raise KeyError(
+            f"No metadata for {path}; pre-flight coverage check should have caught this."
+        )
     else:
         # Some patients have NaN/inf entries in the combined metadata CSV (e.g.
         # missing FastSurfer columns). Letting them through corrupts the model
@@ -287,7 +291,7 @@ def fit_feature_based_3D(
     restart_check_epoch: int = 250,
     max_total_runs: int = 3,
     debug_nan: bool = False,
-    use_autocast: bool = True,
+    use_autocast: bool = False,
 ):
     """
     Train a 3D model on full volumes using HuntDataLoader.

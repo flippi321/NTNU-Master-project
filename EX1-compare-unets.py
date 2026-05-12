@@ -158,6 +158,7 @@ def run_bayes_step(
     args: argparse.Namespace,
     train: list,
     val: list,
+    test: list,
     device: torch.device,
 ) -> None:
     print("\n=== 2. Bayesian search ===")
@@ -173,13 +174,15 @@ def run_bayes_step(
     data_loader = DataLoader(root_path=args.root)
     train_pairs = [data_loader.get_pair_path_from_id(hid) for hid in train]
     val_pairs   = [data_loader.get_pair_path_from_id(hid) for hid in val]
-    print(f"Train pairs: {len(train_pairs)}  Val pairs: {len(val_pairs)}")
+    test_pairs  = [data_loader.get_pair_path_from_id(hid) for hid in test]
+    print(f"Train pairs: {len(train_pairs)}  Val pairs: {len(val_pairs)}  Test pairs: {len(test_pairs)}")
 
     run_bayes(
         yaml_file=args.bayes_yaml,
         db_path=args.bayes_db,
         train_pairs=train_pairs,
         val_pairs=val_pairs,
+        test_pairs=test_pairs,
         n_trials=args.n_trials,
         metadata_root=args.metadata_root,
         out_dir=args.bayes_out_dir,
@@ -194,12 +197,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Using device: {device}")
 
     if args.skip_data_setup:
-        train, val, _ = load_splits(args.splits_path)
+        train, val, test = load_splits(args.splits_path)
     else:
-        train, val, _ = run_data_setup(args)
+        train, val, test = run_data_setup(args)
 
     if not args.skip_bayes:
-        run_bayes_step(args, train, val, device)
+        run_bayes_step(args, train, val, test, device)
     else:
         print("\nSkipping Bayesian search (--skip-bayes).")
 

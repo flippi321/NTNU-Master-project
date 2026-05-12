@@ -169,6 +169,34 @@ def _append_trial_to_yaml(yaml_file: str, entry: dict) -> None:
 # Core training
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _assert_metadata_coverage(
+    loader: "CombinedMetadataUtils",
+    pairs: list[tuple[str, str]],
+    split_name: str,
+) -> None:
+    """Raise if any x_path's hunt_id is missing from the metadata loader.
+
+    Run as a pre-flight check before training so a coverage gap kills the
+    session in seconds instead of after a multi-hour trial. Once this passes,
+    `get_metadata_features` can fail loudly on a miss without any silent
+    zero-fallback that would otherwise turn off conditioning for a subset of
+    patients.
+    """
+    loader._load()  # ensure _id_to_idx is populated
+    missing: list[str] = []
+    for x_path, _ in pairs:
+        hid = loader._resolve_id(x_path)
+        if hid not in loader._id_to_idx:
+            missing.append(hid)
+    if missing:
+        sample = missing[:5]
+        raise RuntimeError(
+            f"[bayes_search] {split_name}: {len(missing)} of {len(pairs)} "
+            f"patients are missing from metadata CSV — first few: {sample}"
+        )
+    print(f"[bayes_search] {split_name}: {len(pairs)} pairs, all covered")
+
+
 def _eval_on_pairs(
     model: torch.nn.Module,
     device: torch.device,
@@ -194,7 +222,7 @@ def _eval_on_pairs(
                 y = dc.get_volume_with_3d_change(tensor=y, crop_axes=CROP_AXES, remove_mode=True)
 
             if combined_loader is not None:
-                feat = get_metadata_features(combined_loader, x_path).to(data_device)
+                feat = get_metadata_features(combined_loader, x_path).unsqueeze(0).to(data_device)
                 out = model(x, feat)
             else:
                 out = model(x)
@@ -256,15 +284,13 @@ def _run_one_trial(
         optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd, betas=betas)
         scheduler = _build_scheduler(optimizer, sched_type, epochs)
 
-        # Diagnostic toggles for the meta NaN investigation. Both default to the
-        # production behavior; flip via env var when running a debug trial:
-        #   META_DEBUG_NAN=1     -> NaN/inf detection in fit_feature_based_3D
-        #                           AND attention/gate stats in models/unet_3d_meta.py
-        #   META_NO_AUTOCAST=1   -> disable mixed precision for the meta trial
-        # Only takes effect on the meta branch — FILM trials are unchanged.
+        # Both std (fit_3D) and conditioned models (fit_feature_based_3D) train
+        # in fp32 so the std-vs-FiLM-vs-meta comparison is on equal numerical
+        # footing. Mixing fp32 (std) with autocast/GradScaler (FiLM/meta) used
+        # to systematically handicap the conditioned arm — see EX1 v2 plan.
         is_meta = model_type_key == "meta"
         debug_nan = is_meta and os.environ.get("META_DEBUG_NAN", "0") == "1"
-        use_autocast = not (is_meta and os.environ.get("META_NO_AUTOCAST", "0") == "1")
+        use_autocast = False
 
         _, loss_history, _, best_model, best_val_loss = fit_feature_based_3D(
             model=model,
@@ -396,7 +422,16 @@ def run_bayes(
             "'film_simple_res', 'film_complex_res', or 'meta'."
         )
 
-    storage = f"sqlite:///{db_path}"
+    # Concurrent multi-GPU invocations write to the same Optuna SQLite DB. Use
+    # a 60s busy timeout (Optuna's documented recommendation for multi-process
+    # SQLite) and switch the DB to WAL journal mode so writers don't block
+    # each other on a single transaction. WAL is persistent: setting it once
+    # on the file sticks across opens; repeating the PRAGMA on every session
+    # is a no-op.
+    import sqlite3 as _sqlite3
+    with _sqlite3.connect(db_path, timeout=60) as _conn:
+        _conn.execute("PRAGMA journal_mode=WAL")
+    storage = f"sqlite:///{db_path}?timeout=60"
     _cleanup_incomplete_trials(active_types, storage, yaml_file)
     _combined_loader: CombinedMetadataUtils | None = None
 
@@ -407,6 +442,15 @@ def run_bayes(
                 csv_path=os.path.join(metadata_root, "metadata_combined.csv")
             )
         return _combined_loader
+
+    # Pre-flight: if any conditioned study is in the active set, the loader is
+    # going to be hit for every train/val/test patient. Verify coverage now so
+    # a missing hunt_id raises before any model is built.
+    if any(t != "std" for t in active_types):
+        loader = _get_loader()
+        _assert_metadata_coverage(loader, train_pairs, "train")
+        _assert_metadata_coverage(loader, val_pairs, "val")
+        _assert_metadata_coverage(loader, test_pairs or [], "test")
 
     completed = 0
 
