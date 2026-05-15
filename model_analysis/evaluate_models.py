@@ -6,22 +6,22 @@
 # merge-on-write means SSIM/L1 can be added retroactively to models that were
 # already evaluated for Dice/VS — no re-inference required.
 #
-# Example:
-#   python evaluate_models.py \
+# Example (run from project root):
+#   python model_analysis/evaluate_models.py \
 #       --models out/bayes_search/film_simple_res_trial_012_\(0.0520\).pth \
 #                out/bayes_search/std_trial_036_\(0.0538\).pth \
 #                out/bayes_search/meta_trial_018_\(0.0703\).pth \
 #       --device cuda:1
 #
 # Retroactively add SSIM/L1 to existing evaluations (reuses cached predictions):
-#   python evaluate_models.py --models ... --device cuda:1 \
+#   python model_analysis/evaluate_models.py --models ... --device cuda:1 \
 #       --skip_inference --skip_segmentation --skip_dice
 #
 # Skip individual stages if already done:
-#   python evaluate_models.py --models ... --device cuda:1 --skip_inference
-#   python evaluate_models.py --models ... --device cuda:1 --skip_segmentation
-#   python evaluate_models.py --models ... --device cuda:1 --skip_dice
-#   python evaluate_models.py --models ... --device cuda:1 --skip_ssim_l1
+#   python model_analysis/evaluate_models.py --models ... --device cuda:1 --skip_inference
+#   python model_analysis/evaluate_models.py --models ... --device cuda:1 --skip_segmentation
+#   python model_analysis/evaluate_models.py --models ... --device cuda:1 --skip_dice
+#   python model_analysis/evaluate_models.py --models ... --device cuda:1 --skip_ssim_l1
 
 import argparse
 import importlib.util
@@ -31,6 +31,10 @@ import re
 import subprocess
 import sys
 from datetime import datetime
+
+# Make project root importable when this script is invoked as
+#   python model_analysis/evaluate_models.py …
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import nibabel as nib
 import numpy as np

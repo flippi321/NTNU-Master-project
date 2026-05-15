@@ -4,20 +4,26 @@
 # Handles Dice + Volumetric Similarity (segmentation-level) AND SSIM + L1
 # (image-level) metrics, gracefully skipping any that are missing for a model.
 #
-# Examples:
+# Examples (run from project root):
 #   # Specific models:
-#   python analyse_results.py \
+#   python model_analysis/analyse_results.py \
 #       --models film_simple_res_trial_012 std_trial_036 meta_trial_018
 #
 #   # Auto-discover everything in out/ that has already been evaluated:
-#   python analyse_results.py --all
+#   python model_analysis/analyse_results.py --all
 #
 #   # Custom output directory:
-#   python analyse_results.py --all --out_dir out/my_analysis
+#   python model_analysis/analyse_results.py --all --out_dir out/my_analysis
 
 import argparse
 import json
 import os
+import re
+import sys
+
+# Make project root importable when this script is invoked as
+#   python model_analysis/analyse_results.py …
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import matplotlib
 matplotlib.use("Agg")
@@ -64,6 +70,14 @@ def load_model_data(model_id: str, out_root: str) -> tuple[pd.DataFrame, dict]:
     return df, meta
 
 
+_RES_RE = re.compile(r"_(res|residual)(?=_|$)")
+
+
+def _strip_res(name: str) -> str:
+    """Remove '_res' or '_residual' as a suffix or before another underscore."""
+    return _RES_RE.sub("", name)
+
+
 def build_master_df(model_ids: list[str], out_root: str) -> pd.DataFrame:
     parts = []
     for model_id in model_ids:
@@ -80,11 +94,16 @@ def build_master_df(model_ids: list[str], out_root: str) -> pd.DataFrame:
         raise RuntimeError("No valid model results found.")
     master = pd.concat(parts, ignore_index=True)
 
-    # display_name: prefer family; fall back to model_id when a family has >1 model
-    family_counts = master.drop_duplicates("model_id")["model_family"].value_counts()
+    # display_name: family with "_res"/"_residual" stripped. If two distinct models
+    # collapse to the same stripped name, fall back to model_id so labels stay unique.
+    unique = master.drop_duplicates("model_id")
+    stripped_per_id = {row.model_id: _strip_res(row.model_family) for row in unique.itertuples()}
+    stripped_counts = pd.Series(list(stripped_per_id.values())).value_counts()
+
     def _display(row):
-        fam = row["model_family"]
-        return fam if family_counts.get(fam, 0) == 1 else row["model_id"]
+        stripped = stripped_per_id[row["model_id"]]
+        return stripped if stripped_counts.get(stripped, 0) == 1 else row["model_id"]
+
     master["display_name"] = master.apply(_display, axis=1)
     return master
 
