@@ -29,6 +29,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 import pandas as pd
 
 RESULTS_ROOT = os.path.join("ex2", "results")
@@ -97,6 +98,17 @@ def aggregate_one_hot(values_df: pd.DataFrame) -> pd.DataFrame:
         out[_friendly_name(col)] = values_df[col]
 
     return out
+
+
+def build_correlation(shap_agg: pd.DataFrame, imp: pd.DataFrame) -> pd.DataFrame:
+    """Pearson correlation of per-subject SHAP values across features.
+    Square DataFrame indexed/columned by aggregated feature name, ordered by
+    mean |SHAP| so it visually lines up with feature_importance.csv. Features
+    with zero SHAP variance produce NaN rows/cols — left as NaN so the heatmap
+    leaves them blank instead of showing misleading zeros.
+    """
+    features = imp["feature"].tolist()
+    return shap_agg[features].corr(method="pearson")
 
 
 def build_importance(shap_agg: pd.DataFrame) -> pd.DataFrame:
@@ -184,6 +196,24 @@ def plot_shap_summary(shap_agg: pd.DataFrame,
     print(f"  Saved: {out_path}")
 
 
+def plot_correlation(corr: pd.DataFrame, model_id: str, out_path: str) -> None:
+    """Heatmap of pairwise Pearson correlation between feature SHAP values."""
+    n = len(corr)
+    fig, ax = plt.subplots(figsize=(max(8, n * 0.4), max(7, n * 0.4)))
+    sns.heatmap(corr, ax=ax,
+                cmap="RdBu_r", vmin=-1, vmax=1, center=0,
+                square=True, linewidths=0.3,
+                annot=(n <= 30), fmt=".2f", annot_kws={"size": 6},
+                cbar_kws={"label": "Pearson r"})
+    ax.set_title(f"SHAP value correlation — {model_id}")
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+    plt.setp(ax.get_yticklabels(), rotation=0,  fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out_path}")
+
+
 def plot_shap_distribution(shap_agg: pd.DataFrame, imp: pd.DataFrame,
                            model_id: str, out_path: str) -> None:
     features = imp["feature"].tolist()
@@ -237,6 +267,13 @@ def run_one(model_id: str, out_dir: str | None) -> None:
                       os.path.join(out_dir, "shap_summary.png"))
     plot_shap_distribution(shap_agg, imp, model_id,
                            os.path.join(out_dir, "shap_distribution.png"))
+
+    corr = build_correlation(shap_agg, imp)
+    corr_csv = os.path.join(out_dir, "shap_correlation.csv")
+    corr.to_csv(corr_csv)
+    print(f"  Saved: {corr_csv}")
+    plot_correlation(corr, model_id,
+                     os.path.join(out_dir, "shap_correlation.png"))
 
 
 def main():
