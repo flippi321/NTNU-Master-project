@@ -60,33 +60,32 @@ class Out(nn.Module):
         return self.conv(x)
 
 class ResidualUNet3D(nn.Module):
-    def __init__(self, in_ch=1, out_ch=1, base=32):
+    def __init__(self, in_ch=1, out_ch=1, base=32,
+                 device: torch.device | str | None = None):
         super().__init__()
-        self.dev0 = torch.device("cuda:0")
-        self.dev1 = torch.device("cuda:1")
+        if device is None:
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device)
 
-        # --- Encoder (GPU 0) ---
-        self.e1 = ConvBlock(in_ch, base).to(self.dev0)
-        self.d2 = Down(base, base * 2).to(self.dev0)
-        self.d3 = Down(base * 2, base * 4).to(self.dev0)
-        self.d4 = Down(base * 4, base * 8).to(self.dev0)
+        # --- Encoder ---
+        self.e1 = ConvBlock(in_ch, base).to(self.device)
+        self.d2 = Down(base, base * 2).to(self.device)
+        self.d3 = Down(base * 2, base * 4).to(self.device)
+        self.d4 = Down(base * 4, base * 8).to(self.device)
 
-        # --- Bottleneck (GPU 0) ---
-        self.bott = ConvBlock(base * 8, base * 16).to(self.dev0)
-        self.bott_sec = ConvBlock(base * 16, base * 16).to(self.dev0)
+        # --- Bottleneck ---
+        self.bott = ConvBlock(base * 8, base * 16).to(self.device)
+        self.bott_sec = ConvBlock(base * 16, base * 16).to(self.device)
 
-        # --- Heavy decoder layers (GPU 0) ---
-        self.u4 = Up(base * 16, base * 8).to(self.dev0)
-        self.u3 = Up(base * 8, base * 4).to(self.dev0)
+        # --- Decoder ---
+        self.u4 = Up(base * 16, base * 8).to(self.device)
+        self.u3 = Up(base * 8, base * 4).to(self.device)
+        self.u2 = Up(base * 4, base * 2).to(self.device)
+        self.u1 = Out(base * 2, base).to(self.device)  # last layer: no upsample
 
-        # --- Light decoder layers (GPU 1) ---
-        self.u2 = Up(base * 4, base * 2).to(self.dev1)
-        self.u1 = Out(base * 2, base).to(self.dev1)  # last layer: no upsample
-
-        self.out = nn.Conv3d(base, out_ch, kernel_size=1).to(self.dev1)
+        self.out = nn.Conv3d(base, out_ch, kernel_size=1).to(self.device)
     def forward(self, x):
-        # --- Encoder + bottleneck + heavy decoder on GPU 0 ---
-        x = x.to(self.dev0)
+        x = x.to(self.device)
         s1 = self.e1(x)
 
         s2, x2 = self.d2(s1)
@@ -98,13 +97,7 @@ class ResidualUNet3D(nn.Module):
         d4 = self.u4(b, s4)
         d3 = self.u3(d4, s3)
 
-        # --- Move to GPU 1 for light decoder ---
-        d3 = d3.to(self.dev1)
-        s2 = s2.to(self.dev1)
-        s1 = s1.to(self.dev1)
-
-        # --- Light decoder on GPU 1 ---
         d2 = self.u2(d3, s2)
         d1 = self.u1(d2, s1)
         delta = self.out(d1)
-        return x.to(self.dev1) + delta, delta
+        return x + delta, delta

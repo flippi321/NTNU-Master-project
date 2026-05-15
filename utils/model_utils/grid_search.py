@@ -64,7 +64,7 @@ def _build_model(
             num_heads=int(entry["num_heads"]),
             device=device,
         )
-    return cls(base=base_channels)
+    return cls(base=base_channels, device=device)
 
 
 def _build_scheduler(optimizer, scheduler_type: str, epochs: int):
