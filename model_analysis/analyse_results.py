@@ -205,13 +205,13 @@ def plot_boxplot(master: pd.DataFrame, metric: str, out_path: str) -> None:
     labels    = [name_map[m] for m in model_ids]
     colors    = _model_colors(model_ids, master)
 
-    fig, axes = plt.subplots(1, 3, figsize=(max(14, len(model_ids) * 1.5), 5), sharey=True)
+    # Per-tissue y-axes — CSF's wider variance otherwise crushes GM/WM detail.
+    fig, axes = plt.subplots(1, 3, figsize=(max(14, len(model_ids) * 1.5), 5))
     label = "Dice" if metric == "dice" else "VS"
 
-    all_values = master[[f"{metric}_{t}" for t in TISSUES]].values.ravel()
-
     for ax, tissue in zip(axes, TISSUES):
-        data = [master.loc[master["model_id"] == mid, f"{metric}_{tissue}"].dropna().values
+        col  = f"{metric}_{tissue}"
+        data = [master.loc[master["model_id"] == mid, col].dropna().values
                 for mid in model_ids]
         bp = ax.boxplot(data, patch_artist=True, medianprops={"color": "black"})
         for patch, color in zip(bp["boxes"], colors):
@@ -219,10 +219,9 @@ def plot_boxplot(master: pd.DataFrame, metric: str, out_path: str) -> None:
         ax.set_title(f"{tissue}")
         ax.set_xticks(range(1, len(model_ids) + 1))
         ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
-        ax.set_ylabel(label if tissue == "GM" else "")
+        ax.set_ylabel(label)
         ax.grid(axis="y", alpha=0.3)
-
-    _zoom_ylim(axes[0], all_values, pad_frac=0.1, hard_cap_high=1.0)
+        _zoom_ylim(ax, master[col].dropna().values, pad_frac=0.1, hard_cap_high=1.0)
 
     fig.suptitle(f"{label} Score Distribution by Model", fontsize=13)
     fig.tight_layout()
@@ -238,9 +237,8 @@ def plot_violin(master: pd.DataFrame, metric: str, out_path: str) -> None:
     labels    = [name_map[m] for m in model_ids]
     label     = "Dice" if metric == "dice" else "VS"
 
-    all_values = master[[f"{metric}_{t}" for t in TISSUES]].values.ravel()
-
-    fig, axes = plt.subplots(1, 3, figsize=(max(14, len(model_ids) * 1.5), 5), sharey=True)
+    # Per-tissue y-axes — CSF's wider variance otherwise crushes GM/WM detail.
+    fig, axes = plt.subplots(1, 3, figsize=(max(14, len(model_ids) * 1.5), 5))
     for ax, tissue in zip(axes, TISSUES):
         col = f"{metric}_{tissue}"
         df_melt = master[["display_name", col]].dropna()
@@ -249,14 +247,13 @@ def plot_violin(master: pd.DataFrame, metric: str, out_path: str) -> None:
                        legend=False, cut=0, inner="box")
         ax.set_title(tissue)
         ax.set_xlabel("")
-        ax.set_ylabel(label if tissue == "GM" else "")
+        ax.set_ylabel(label)
+        _zoom_ylim(ax, df_melt[col].values, pad_frac=0.1, hard_cap_high=1.0)
         for tick in ax.get_xticklabels():
             tick.set_rotation(45)
             tick.set_horizontalalignment("right")
             tick.set_fontsize(9)
         ax.grid(axis="y", alpha=0.3)
-
-    _zoom_ylim(axes[0], all_values, pad_frac=0.1, hard_cap_high=1.0)
 
     fig.suptitle(f"{label} Score Violin Distribution", fontsize=13)
     fig.tight_layout()
