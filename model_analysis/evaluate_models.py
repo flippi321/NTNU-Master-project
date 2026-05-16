@@ -43,7 +43,7 @@ import torch
 import yaml
 from tqdm import tqdm
 
-from utils.metadata.combined_metadata_utils import CombinedMetadataUtils
+from utils.metadata.combined_metadata_utils import CombinedMetadataUtils, SubsetCombinedMetadataUtil
 from utils.model_utils.grid_search import _build_model
 from utils.model_utils.loss_functions import l1_loss, ssim_loss
 from utils.model_utils.train_eval import get_metadata_features
@@ -73,8 +73,12 @@ CSF_LABELS = set([4, 5, 14, 15, 24, 31, 43, 44, 63, 72])
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def parse_model_id(path: str) -> str:
-    """film_simple_res_trial_012_(0.0520).pth  →  film_simple_res_trial_012"""
+    """film_simple_res_trial_012_(0.0520).pth  →  film_simple_res_trial_012
+    out/ex3/<run_name>/model.pth                →  <run_name>
+    """
     stem = os.path.splitext(os.path.basename(path))[0]
+    if stem.lower() == "model":
+        stem = os.path.basename(os.path.dirname(os.path.abspath(path)))
     return re.sub(r"_\(\d+\.\d+\)$", "", stem)
 
 
@@ -100,6 +104,69 @@ def find_yaml_entry(trials: list[dict], model_id: str) -> dict | None:
         if model_id in os.path.basename(mp):
             return t
     return None
+
+
+# Maps the user-facing model_type stored in ex3 meta.json to (gen, residual).
+# Mirrors ex3/train_reduced.py:_FILM_TYPES — duplicated to keep model_analysis/
+# free of any runtime dependency on ex3/.
+_EX3_FILM_TYPES = {
+    "film_simple":      ("simple",  False),
+    "film_complex":     ("complex", False),
+    "film_simple_res":  ("simple",  True),
+    "film_complex_res": ("complex", True),
+}
+
+
+def resolve_model_context(model_path: str, trials: list[dict]) -> dict:
+    """Return {out_dir, entry, subset_indices} for the model's layout.
+
+    ex3 layout (sibling meta.json + selection.json) wins when both files exist;
+    otherwise we fall back to the bayes_search.yaml lookup.
+    """
+    model_dir = os.path.dirname(os.path.abspath(model_path))
+    meta_p    = os.path.join(model_dir, "meta.json")
+    sel_p     = os.path.join(model_dir, "selection.json")
+
+    if os.path.isfile(meta_p) and os.path.isfile(sel_p):
+        with open(meta_p) as f:
+            m = json.load(f)
+        with open(sel_p) as f:
+            s = json.load(f)
+        mt = m["model_type"]
+        hp = m.get("hyperparams", {})
+        entry: dict = {
+            "id":            m.get("run_name"),
+            "learning_rate": hp.get("lr"),
+            "weight_decay":  hp.get("weight_decay"),
+            "beta1":         hp.get("beta1"),
+            "beta2":         hp.get("beta2"),
+            "lr_scheduler":  hp.get("scheduler"),
+            "results":       {"best_val_loss": m.get("best_val_loss")},
+        }
+        if mt in _EX3_FILM_TYPES:
+            gen, res = _EX3_FILM_TYPES[mt]
+            entry.update({
+                "model_type":          "film",
+                "film_generator_type": gen,
+                "mlp_hidden":          hp.get("mlp_hidden"),
+                "residual":            res,
+            })
+        elif mt == "meta":
+            entry.update({
+                "model_type":    "meta",
+                "n_meta_tokens": hp.get("n_meta_tokens"),
+                "num_heads":     hp.get("num_heads"),
+            })
+        else:
+            entry["model_type"] = mt  # "std"
+        return {"out_dir": model_dir, "entry": entry,
+                "subset_indices": s["raw_indices"]}
+
+    # Bayes-search fallback
+    model_id = parse_model_id(model_path)
+    return {"out_dir":        os.path.join("out", model_id),
+            "entry":          find_yaml_entry(trials, model_id),
+            "subset_indices": None}
 
 
 def to_binary_mask(seg_vol: np.ndarray, label_set: set) -> np.ndarray:
@@ -174,11 +241,12 @@ def run_inference(
     model_family: str,
     model: torch.nn.Module,
     test_pairs: list[tuple[str, str]],
-    comb_loader: CombinedMetadataUtils,
+    comb_loader: CombinedMetadataUtils | SubsetCombinedMetadataUtil,
     dc: DataConverter,
     device: torch.device,
+    out_dir: str,
 ) -> None:
-    pred_dir = os.path.join("out", model_id, "predictions")
+    pred_dir = os.path.join(out_dir, "predictions")
     os.makedirs(pred_dir, exist_ok=True)
     is_conditional = model_family != "std"
     n_skipped = 0
@@ -218,9 +286,10 @@ def run_segmentation(
     model_id: str,
     test_pairs: list[tuple[str, str]],
     fs_device: str,
+    out_dir: str,
 ) -> None:
-    pred_dir = os.path.join("out", model_id, "predictions")
-    seg_dir  = os.path.join("out", model_id, "segmentations")
+    pred_dir = os.path.join(out_dir, "predictions")
+    seg_dir  = os.path.join(out_dir, "segmentations")
     os.makedirs(GT_SEG_DIR, exist_ok=True)
 
     # GT segmentations (shared across all models)
@@ -253,8 +322,9 @@ def run_segmentation(
 def run_dice(
     model_id: str,
     test_pairs: list[tuple[str, str]],
+    out_dir: str,
 ) -> pd.DataFrame:
-    seg_dir = os.path.join("out", model_id, "segmentations")
+    seg_dir = os.path.join(out_dir, "segmentations")
     rows = []
 
     for hunt3_path, _ in tqdm(test_pairs, desc=f"Dice  {model_id}"):
@@ -294,9 +364,10 @@ def run_ssim_l1(
     test_pairs: list[tuple[str, str]],
     dc: DataConverter,
     device: torch.device,
+    out_dir: str,
 ) -> pd.DataFrame:
     """Compute per-patient SSIM and L1 losses from cached predictions vs HUNT4 target."""
-    pred_dir = os.path.join("out", model_id, "predictions")
+    pred_dir = os.path.join(out_dir, "predictions")
     rows = []
 
     for hunt3_path, hunt4_path in tqdm(test_pairs, desc=f"SSIM/L1  {model_id}"):
@@ -355,11 +426,11 @@ def save_meta(
     model_path: str,
     model_family: str,
     entry: dict | None,
+    out_dir: str,
     dice_df: pd.DataFrame | None = None,
     ssim_df: pd.DataFrame | None = None,
 ) -> None:
     """Merge new results into existing meta.json + dice_results.csv (if any)."""
-    out_dir = os.path.join("out", model_id)
     os.makedirs(out_dir, exist_ok=True)
     meta_path = os.path.join(out_dir, "meta.json")
     csv_path  = os.path.join(out_dir, "dice_results.csv")
@@ -468,26 +539,38 @@ def main():
             print(f"\n[ERROR] Model file not found: {model_path}")
             continue
 
-        model_id     = parse_model_id(model_path)
-        model_family = parse_model_family(model_id)
-        entry        = find_yaml_entry(trials, model_id)
+        model_id       = parse_model_id(model_path)
+        model_family   = parse_model_family(model_id)
+        ctx            = resolve_model_context(model_path, trials)
+        out_dir        = ctx["out_dir"]
+        entry          = ctx["entry"]
+        subset_indices = ctx["subset_indices"]
+
+        loader = (SubsetCombinedMetadataUtil(comb_loader, subset_indices)
+                  if subset_indices else comb_loader)
 
         print(f"\n{'='*60}")
         print(f"Model  : {model_id}")
         print(f"Family : {model_family}")
+        print(f"Out dir: {out_dir}")
+        if subset_indices is not None:
+            print(f"Features: {loader.n_features} (SHAP subset)")
         if entry:
-            print(f"Val loss: {entry.get('results', {}).get('best_val_loss', 'N/A'):.4f}")
+            val_loss = entry.get("results", {}).get("best_val_loss")
+            if isinstance(val_loss, (int, float)):
+                print(f"Val loss: {val_loss:.4f}")
 
         # ── Stage 1: Inference ──────────────────────────────────────────────
         if not args.skip_inference:
             if entry is None:
-                print("[WARN] No YAML entry found — cannot build model; skipping inference")
+                print("[WARN] No entry found — cannot build model; skipping inference")
             else:
                 model = _build_model(entry, base_channels=BASE_CHANNELS,
-                                     cond_dim=comb_loader.n_features, device=device)
+                                     cond_dim=loader.n_features, device=device)
                 model.load_state_dict(torch.load(model_path, weights_only=False))
                 model.eval()
-                run_inference(model_id, model_family, model, test_pairs, comb_loader, dc, device)
+                run_inference(model_id, model_family, model, test_pairs,
+                              loader, dc, device, out_dir)
                 del model
                 torch.cuda.empty_cache()
 
@@ -496,12 +579,12 @@ def main():
             if not os.path.isdir(FASTSURFER_DIR):
                 print(f"[ERROR] FastSurfer not found at {FASTSURFER_DIR}. Clone it first.")
             else:
-                run_segmentation(model_id, test_pairs, fs_device)
+                run_segmentation(model_id, test_pairs, fs_device, out_dir)
 
         # ── Stage 3: Dice + Volumetric Similarity ───────────────────────────
         dice_df: pd.DataFrame | None = None
         if not args.skip_dice:
-            dice_df = run_dice(model_id, test_pairs)
+            dice_df = run_dice(model_id, test_pairs, out_dir)
             if dice_df.empty:
                 print("  [WARN] No dice results computed.")
                 dice_df = None
@@ -509,14 +592,14 @@ def main():
         # ── Stage 4: SSIM + L1 (uses cached predictions) ────────────────────
         ssim_df: pd.DataFrame | None = None
         if not args.skip_ssim_l1:
-            ssim_df = run_ssim_l1(model_id, test_pairs, dc, device)
+            ssim_df = run_ssim_l1(model_id, test_pairs, dc, device, out_dir)
             if ssim_df.empty:
                 print("  [WARN] No SSIM/L1 results computed.")
                 ssim_df = None
 
         # ── Persist (merges with existing meta.json + dice_results.csv) ─────
         if dice_df is not None or ssim_df is not None:
-            save_meta(model_id, model_path, model_family, entry,
+            save_meta(model_id, model_path, model_family, entry, out_dir,
                       dice_df=dice_df, ssim_df=ssim_df)
 
             if dice_df is not None:
