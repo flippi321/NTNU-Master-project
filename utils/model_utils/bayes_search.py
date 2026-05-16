@@ -582,9 +582,10 @@ def get_bayes_champion_entries(yaml_file: str) -> dict[str, dict]:
 
 
 def select_bayes_champions(
-    yaml_file: str,
-    device: torch.device,
+    yaml_file: str = "out/bayes_search/bayes_search.yaml",
+    device: torch.device = "cuda:0",
     metadata_root: str = "data/metadata",
+    ignored_models: list[str] = ["film_complex"],
 ) -> dict[str, torch.nn.Module]:
     """
     Load and return the best-performing model per type in eval mode.
@@ -608,8 +609,11 @@ def select_bayes_champions(
     champions: dict[str, torch.nn.Module] = {}
 
     for key, entry in best.items():
+        if key in ignored_models:
+            print(f"[select_bayes_champions] Skipping {key} (ignored)")
+            continue
         model_path = entry["results"]["model_path"]
-        if entry["model_type"] == "film":
+        if entry["model_type"] in ("film", "meta"):
             if _combined_loader is None:
                 _combined_loader = CombinedMetadataUtils(
                     csv_path=os.path.join(metadata_root, "metadata_combined.csv")
