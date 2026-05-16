@@ -203,8 +203,8 @@ def plot_correlation(corr: pd.DataFrame, model_id: str, out_path: str) -> None:
     sns.heatmap(corr, ax=ax,
                 cmap="RdBu_r", vmin=-1, vmax=1, center=0,
                 square=True, linewidths=0.3,
-                annot=(n <= 30), fmt=".2f", annot_kws={"size": 6},
-                cbar_kws={"label": "Pearson r"})
+                annot=(n <= 30), fmt=".2f", annot_kws={"size": 7},
+                cbar=False)
     ax.set_title(f"SHAP value correlation — {model_id}")
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
     plt.setp(ax.get_yticklabels(), rotation=0,  fontsize=8)
