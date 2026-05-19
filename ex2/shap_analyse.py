@@ -132,15 +132,28 @@ def build_importance(shap_agg: pd.DataFrame) -> pd.DataFrame:
 # ─── Plots ────────────────────────────────────────────────────────────────────
 
 def plot_feature_importance(imp: pd.DataFrame, model_id: str, out_path: str) -> None:
-    fig, ax = plt.subplots(figsize=(8, max(4, len(imp) * 0.32)))
+    from matplotlib.ticker import LogFormatterSciNotation
+
+    fig, ax = plt.subplots(figsize=(10, max(4, len(imp) * 0.32)))
     bars = ax.barh(imp["feature"][::-1], imp["mean_abs_shap"][::-1],
                    color="#4C72B0", alpha=0.85)
-    ax.set_xlabel("Mean |SHAP value|  (impact on prediction loss)")
-    ax.set_title(f"Feature importance — {model_id}")
-    ax.grid(axis="x", alpha=0.3)
+    ax.set_xscale("log")
+    ax.xaxis.set_major_formatter(LogFormatterSciNotation())
+    ax.set_xlabel("Mean |SHAP value| (log scale)")
+    ax.set_title(f"Feature importance - {model_id}")
+    ax.grid(axis="x", which="both", alpha=0.3)
     for bar, v in zip(bars, imp["mean_abs_shap"][::-1]):
+        if v > 0:
+            mantissa, exponent = f"{v:.1e}".split("e")
+            label = rf" {mantissa}·10$^{{{int(exponent)}}}$"
+        else:
+            label = " 0"
         ax.text(v, bar.get_y() + bar.get_height() / 2,
-                f" {v:.4f}", va="center", fontsize=7)
+                label, va="center", fontsize=10, fontweight="semibold",
+                color="#222222")
+    # Pad the upper x-limit so the largest bar's value label doesn't clip.
+    vmax = float(imp["mean_abs_shap"].max())
+    ax.set_xlim(right=vmax * 2.5)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -180,7 +193,7 @@ def plot_shap_summary(shap_agg: pd.DataFrame,
     ax.set_yticks(range(n_feat))
     ax.set_yticklabels(list(reversed(features)), fontsize=9)
     ax.set_xlabel("SHAP value  (impact on prediction loss; lower = better)")
-    ax.set_title(f"SHAP summary — {model_id}")
+    ax.set_title(f"SHAP summary - {model_id}")
     ax.grid(axis="x", alpha=0.3)
 
     sm = plt.cm.ScalarMappable(cmap=cmap)
@@ -205,7 +218,7 @@ def plot_correlation(corr: pd.DataFrame, model_id: str, out_path: str) -> None:
                 square=True, linewidths=0.3,
                 annot=(n <= 30), fmt=".2f", annot_kws={"size": 7},
                 cbar=False)
-    ax.set_title(f"SHAP value correlation — {model_id}")
+    ax.set_title(f"SHAP value correlation - {model_id}")
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
     plt.setp(ax.get_yticklabels(), rotation=0,  fontsize=8)
     fig.tight_layout()
@@ -230,7 +243,7 @@ def plot_shap_distribution(shap_agg: pd.DataFrame, imp: pd.DataFrame,
     ax.set_yticklabels(features, fontsize=9)
     ax.invert_yaxis()
     ax.set_xlabel("SHAP value")
-    ax.set_title(f"SHAP value distribution — {model_id}")
+    ax.set_title(f"SHAP value distribution - {model_id}")
     ax.grid(axis="x", alpha=0.3)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
