@@ -45,6 +45,7 @@ FAMILY_PALETTE = {
     "film_simple_res": "#C44E52",
     "film_complex_res":"#8172B2",
     "meta":            "#937860",
+    "feat":            "#17A2B8",  # ex3 feature-selected trials
 }
 
 
@@ -78,8 +79,22 @@ def _strip_res(name: str) -> str:
     return _RES_RE.sub("", name)
 
 
-def build_master_df(model_ids: list[str], out_root: str) -> pd.DataFrame:
+def load_model_data_from_dir(model_dir: str) -> tuple[pd.DataFrame, dict, str]:
+    """Same as load_model_data but takes a full directory path. Returns (df, meta, model_id)."""
+    csv_path  = os.path.join(model_dir, "dice_results.csv")
+    meta_path = os.path.join(model_dir, "meta.json")
+    df   = pd.read_csv(csv_path)
+    with open(meta_path) as f:
+        meta = json.load(f)
+    model_id = os.path.basename(os.path.normpath(model_dir))
+    return df, meta, model_id
+
+
+def build_master_df(model_ids: list[str], out_root: str,
+                    extra_model_dirs: list[str] | None = None) -> pd.DataFrame:
     parts = []
+    meta_per_id: dict[str, dict] = {}
+
     for model_id in model_ids:
         try:
             df, meta = load_model_data(model_id, out_root)
@@ -89,18 +104,40 @@ def build_master_df(model_ids: list[str], out_root: str) -> pd.DataFrame:
         df["model_id"]     = model_id
         df["model_family"] = meta.get("model_family", "unknown")
         df["val_loss"]     = meta.get("val_loss")
+        meta_per_id[model_id] = meta
         parts.append(df)
+
+    for model_dir in (extra_model_dirs or []):
+        try:
+            df, meta, model_id = load_model_data_from_dir(model_dir)
+        except FileNotFoundError as e:
+            print(f"[WARN] {e} — skipping extra {model_dir}")
+            continue
+        if model_id in meta_per_id:
+            print(f"[WARN] extra model {model_id} already discovered via --root — skipping")
+            continue
+        df["model_id"]     = model_id
+        df["model_family"] = meta.get("model_family", "unknown")
+        df["val_loss"]     = meta.get("val_loss")
+        meta_per_id[model_id] = meta
+        parts.append(df)
+
     if not parts:
         raise RuntimeError("No valid model results found.")
     master = pd.concat(parts, ignore_index=True)
 
-    # display_name: family with "_res"/"_residual" stripped. If two distinct models
-    # collapse to the same stripped name, fall back to model_id so labels stay unique.
+    # display_name: prefer explicit override in meta.json (used by ex3 to embed
+    # feature params in the label), otherwise strip "_res"/"_residual" from the
+    # family. If two distinct models collapse to the same stripped name, fall
+    # back to model_id so labels stay unique.
     unique = master.drop_duplicates("model_id")
     stripped_per_id = {row.model_id: _strip_res(row.model_family) for row in unique.itertuples()}
     stripped_counts = pd.Series(list(stripped_per_id.values())).value_counts()
 
     def _display(row):
+        explicit = meta_per_id.get(row["model_id"], {}).get("display_name")
+        if explicit:
+            return explicit
         stripped = stripped_per_id[row["model_id"]]
         return stripped if stripped_counts.get(stripped, 0) == 1 else row["model_id"]
 
@@ -143,9 +180,33 @@ def build_summary_df(master: pd.DataFrame) -> pd.DataFrame:
 
 # ─── Plots ────────────────────────────────────────────────────────────────────
 
-def _model_colors(model_ids: list[str], master: pd.DataFrame) -> list[str]:
-    fam_map = master.drop_duplicates("model_id").set_index("model_id")["model_family"].to_dict()
-    return [FAMILY_PALETTE.get(fam_map.get(mid, ""), "#888888") for mid in model_ids]
+def _color_and_legend(model_ids: list[str], master: pd.DataFrame
+                      ) -> tuple[dict[str, object], dict[str, str]]:
+    """Per-model color + legend-label assignment.
+
+    When every model in `model_ids` has a distinct `model_family`, use
+    FAMILY_PALETTE keyed by family (legend labels = family names). When
+    multiple models share a family (e.g. ex3's 'feat' trials), fall back to
+    a categorical palette so every model gets a distinct color (legend
+    labels = display_name).
+    """
+    fam_per_id  = master.drop_duplicates("model_id").set_index("model_id")["model_family"].to_dict()
+    name_per_id = master.drop_duplicates("model_id").set_index("model_id")["display_name"].to_dict()
+
+    families = [fam_per_id.get(mid, "") for mid in model_ids]
+    if len(set(families)) == len(model_ids):
+        colors = {mid: FAMILY_PALETTE.get(fam_per_id.get(mid, ""), "#888888") for mid in model_ids}
+        labels = {mid: fam_per_id.get(mid, "unknown") for mid in model_ids}
+    else:
+        palette = sns.color_palette("husl", n_colors=len(model_ids))
+        colors  = {mid: palette[i] for i, mid in enumerate(model_ids)}
+        labels  = {mid: name_per_id.get(mid, mid) for mid in model_ids}
+    return colors, labels
+
+
+def _model_colors(model_ids: list[str], master: pd.DataFrame) -> list[object]:
+    colors, _ = _color_and_legend(model_ids, master)
+    return [colors[mid] for mid in model_ids]
 
 
 def _zoom_ylim(ax, values, pad_frac: float = 0.1, hard_cap_high: float | None = None) -> None:
@@ -262,23 +323,30 @@ def plot_violin(master: pd.DataFrame, metric: str, out_path: str) -> None:
     print(f"  Saved: {out_path}")
 
 
-def plot_val_loss_vs_dice(summary: pd.DataFrame, out_path: str) -> None:
-    """Scatter: x=val_loss, y=mean dice, one point per model, coloured by family."""
+def plot_val_loss_vs_dice(summary: pd.DataFrame, master: pd.DataFrame, out_path: str) -> None:
+    """Scatter: x=val_loss, y=mean dice, one point per model."""
     fig, ax = plt.subplots(figsize=(8, 5))
     markers   = {"GM": "o", "WM": "s", "CSF": "^"}
     all_yvals = []
 
+    model_ids       = summary["model_id"].tolist()
+    colors, labels  = _color_and_legend(model_ids, master)
+
     for tissue, marker in markers.items():
         for _, row in summary.iterrows():
-            color = FAMILY_PALETTE.get(row["model_family"], "#888")
+            color = colors.get(row["model_id"], "#888")
             y     = row[f"dice_{tissue}_mean"]
             ax.scatter(row["val_loss"], y, color=color, marker=marker, s=60, alpha=0.85)
             if pd.notna(y):
                 all_yvals.append(float(y))
 
-    for fam, color in FAMILY_PALETTE.items():
-        if fam in summary["model_family"].values:
-            ax.scatter([], [], color=color, label=fam, s=60)
+    seen_labels: set[str] = set()
+    for mid in model_ids:
+        lbl = labels[mid]
+        if lbl in seen_labels:
+            continue
+        seen_labels.add(lbl)
+        ax.scatter([], [], color=colors[mid], label=lbl, s=60)
     for tissue, marker in markers.items():
         ax.scatter([], [], color="grey", marker=marker, label=tissue, s=60)
 
@@ -356,7 +424,8 @@ def plot_heatmap(summary: pd.DataFrame, out_path: str) -> None:
     print(f"  Saved: {out_path}")
 
 
-def plot_loss_bar(summary: pd.DataFrame, metric: str, out_path: str) -> None:
+def plot_loss_bar(summary: pd.DataFrame, master: pd.DataFrame,
+                  metric: str, out_path: str) -> None:
     """Bar chart of mean SSIM or L1 loss per model (lower is better)."""
     mean_col = f"{metric}_mean"
     std_col  = f"{metric}_std"
@@ -368,7 +437,8 @@ def plot_loss_bar(summary: pd.DataFrame, metric: str, out_path: str) -> None:
     labels = sub["display_name"].tolist()
     means  = sub[mean_col].values
     stds   = sub[std_col].fillna(0).values
-    colors = [FAMILY_PALETTE.get(f, "#888") for f in sub["model_family"]]
+    color_map, _ = _color_and_legend(sub["model_id"].tolist(), master)
+    colors = [color_map[mid] for mid in sub["model_id"].tolist()]
 
     label = "SSIM Loss" if metric == "ssim" else "L1 Loss"
     fig, ax = plt.subplots(figsize=(max(8, len(labels) * 1.0), 5))
@@ -416,8 +486,8 @@ def plot_loss_boxplot(master: pd.DataFrame, metric: str, out_path: str) -> None:
     print(f"  Saved: {out_path}")
 
 
-def plot_val_loss_vs_metric(summary: pd.DataFrame, metric_col: str,
-                            ylabel: str, out_path: str) -> None:
+def plot_val_loss_vs_metric(summary: pd.DataFrame, master: pd.DataFrame,
+                            metric_col: str, ylabel: str, out_path: str) -> None:
     """Scatter: val_loss vs a single mean metric (lower or higher is better)."""
     if metric_col not in summary.columns or summary[metric_col].isna().all():
         print(f"  [skip] no {metric_col} data")
@@ -428,13 +498,20 @@ def plot_val_loss_vs_metric(summary: pd.DataFrame, metric_col: str,
         print(f"  [skip] no overlap between val_loss and {metric_col}")
         return
 
+    model_ids      = sub["model_id"].tolist()
+    colors, labels = _color_and_legend(model_ids, master)
+
     fig, ax = plt.subplots(figsize=(8, 5))
     for _, row in sub.iterrows():
-        color = FAMILY_PALETTE.get(row["model_family"], "#888")
+        color = colors.get(row["model_id"], "#888")
         ax.scatter(row["val_loss"], row[metric_col], color=color, s=60, alpha=0.85)
-    for fam, color in FAMILY_PALETTE.items():
-        if fam in sub["model_family"].values:
-            ax.scatter([], [], color=color, label=fam, s=60)
+    seen_labels: set[str] = set()
+    for mid in model_ids:
+        lbl = labels[mid]
+        if lbl in seen_labels:
+            continue
+        seen_labels.add(lbl)
+        ax.scatter([], [], color=colors[mid], label=lbl, s=60)
     ax.set_xlabel("Validation Loss")
     ax.set_ylabel(ylabel)
     ax.set_title(f"Validation Loss vs {ylabel}")
@@ -486,24 +563,33 @@ def print_summary(summary: pd.DataFrame) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Analyse stored evaluation results from out/")
     group  = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--models", nargs="+", help="Model IDs (directory names in out/)")
-    group.add_argument("--all",    action="store_true", help="Discover all evaluated models in out/")
+    group.add_argument("--models", nargs="+", help="Model IDs (directory names under --root)")
+    group.add_argument("--all",    action="store_true", help="Discover all evaluated models under --root")
+    parser.add_argument("--root",          default=OUT_ROOT,
+                        help=f"Root directory containing <model_id>/ subdirs (default: {OUT_ROOT})")
+    parser.add_argument("--extra-models", nargs="+", default=[],
+                        help="Additional model directories to include verbatim (full paths)")
     parser.add_argument("--out_dir", default="out/analysis", help="Output directory for figures (default: out/analysis)")
     args = parser.parse_args()
 
+    root = args.root
+
     if args.all:
-        model_ids = discover_models(OUT_ROOT)
-        if not model_ids:
-            print("No evaluated models found in out/ (need dice_results.csv + meta.json).")
+        model_ids = discover_models(root)
+        if not model_ids and not args.extra_models:
+            print(f"No evaluated models found in {root}/ (need dice_results.csv + meta.json).")
             return
-        print(f"Found {len(model_ids)} evaluated models: {model_ids}")
+        print(f"Found {len(model_ids)} evaluated models under {root}: {model_ids}")
     else:
         model_ids = args.models
 
+    if args.extra_models:
+        print(f"Plus {len(args.extra_models)} extra model dir(s): {args.extra_models}")
+
     os.makedirs(args.out_dir, exist_ok=True)
 
-    print(f"\nLoading results for {len(model_ids)} model(s)...")
-    master  = build_master_df(model_ids, OUT_ROOT)
+    print(f"\nLoading results for {len(model_ids) + len(args.extra_models)} model(s)...")
+    master  = build_master_df(model_ids, root, extra_model_dirs=args.extra_models)
     summary = build_summary_df(master)
 
     print_summary(summary)
@@ -520,16 +606,16 @@ def main():
     plot_violin(master, "dice",     os.path.join(args.out_dir, "dice_violin.png"))
     plot_violin(master, "vs",       os.path.join(args.out_dir, "vs_violin.png"))
 
-    plot_loss_bar(summary, "ssim",   os.path.join(args.out_dir, "ssim_bar_chart.png"))
-    plot_loss_bar(summary, "l1",     os.path.join(args.out_dir, "l1_bar_chart.png"))
+    plot_loss_bar(summary, master, "ssim", os.path.join(args.out_dir, "ssim_bar_chart.png"))
+    plot_loss_bar(summary, master, "l1",   os.path.join(args.out_dir, "l1_bar_chart.png"))
     plot_loss_boxplot(master, "ssim",os.path.join(args.out_dir, "ssim_boxplot.png"))
     plot_loss_boxplot(master, "l1",  os.path.join(args.out_dir, "l1_boxplot.png"))
 
     if summary["val_loss"].notna().any():
-        plot_val_loss_vs_dice(summary,  os.path.join(args.out_dir, "val_loss_vs_dice.png"))
-        plot_val_loss_vs_metric(summary, "ssim_mean", "Mean SSIM Loss",
+        plot_val_loss_vs_dice(summary, master, os.path.join(args.out_dir, "val_loss_vs_dice.png"))
+        plot_val_loss_vs_metric(summary, master, "ssim_mean", "Mean SSIM Loss",
                                 os.path.join(args.out_dir, "val_loss_vs_ssim.png"))
-        plot_val_loss_vs_metric(summary, "l1_mean",   "Mean L1 Loss",
+        plot_val_loss_vs_metric(summary, master, "l1_mean",   "Mean L1 Loss",
                                 os.path.join(args.out_dir, "val_loss_vs_l1.png"))
 
     plot_heatmap(summary,           os.path.join(args.out_dir, "per_tissue_heatmap.png"))
