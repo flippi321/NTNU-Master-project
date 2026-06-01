@@ -1,8 +1,27 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 from einops import rearrange
+
+# When set, print attention/gate stats whenever they fall outside safe ranges.
+# Toggle via env var META_DEBUG_NAN=1, or by mutating this flag at runtime.
+META_DEBUG_NAN: bool = os.environ.get("META_DEBUG_NAN", "0") == "1"
+# How often to emit a stats line even when nothing looks suspicious. 0 = never.
+# Set via env var META_DEBUG_STRIDE; useful as a baseline against which the bad
+# iters stand out. Counter is shared across all attention/gate call sites.
+META_DEBUG_STRIDE: int = int(os.environ.get("META_DEBUG_STRIDE", "0"))
+_META_DEBUG_STEP: int = 0
+
+
+def _meta_debug_should_emit() -> bool:
+    """Return True if we should emit a periodic baseline stats line this call."""
+    global _META_DEBUG_STEP
+    _META_DEBUG_STEP += 1
+    if META_DEBUG_STRIDE <= 0:
+        return False
+    return (_META_DEBUG_STEP % META_DEBUG_STRIDE) == 0
 
 # ============================================================
 # 3D building blocks (replace 2D conv/BN/interp with 3D)
@@ -81,6 +100,12 @@ class Self_Attention3D(nn.Module):
                             stride=(ratio_d, ratio_h, ratio_w),
                             bias=qkv_bias)
 
+        # Linear projections for metadata tokens that share the K/V channel space.
+        # Lazily created via add_module so the parameter cost is paid only when
+        # the model is conditioned (callers that pass meta_tokens=None pay nothing).
+        self.ke_meta = nn.Linear(dim, dim, bias=qkv_bias)
+        self.ve_meta = nn.Linear(dim, dim, bias=qkv_bias)
+
         self.norm_k = nn.LayerNorm(head_dim)
         self.norm_v = nn.LayerNorm(head_dim)
 
@@ -88,10 +113,11 @@ class Self_Attention3D(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, D, H, W):
+    def forward(self, x, D, H, W, meta_tokens=None):
         """
         x: (B, N, C), N = D*H*W
         D,H,W must be provided (volume grid dims).
+        meta_tokens: optional (B, M, C) tokens prepended to the reduced K/V.
         """
         B, N, C = x.shape
         assert N == D * H * W, "Provided D,H,W do not match token length"
@@ -109,6 +135,13 @@ class Self_Attention3D(nn.Module):
         k_red = self.ke(k_map).flatten(2).transpose(1, 2)  # (B, N', C)
         v_red = self.ve(v_map).flatten(2).transpose(1, 2)  # (B, N', C)
 
+        if meta_tokens is not None:
+            # Re-project metadata through the same K/V channel space and prepend.
+            k_meta = self.ke_meta(meta_tokens) if hasattr(self, "ke_meta") else meta_tokens
+            v_meta = self.ve_meta(meta_tokens) if hasattr(self, "ve_meta") else meta_tokens
+            k_red = torch.cat([k_meta, k_red], dim=1)
+            v_red = torch.cat([v_meta, v_red], dim=1)
+
         Np = k_red.shape[1]
         k_red = k_red.reshape(B, Np, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         v_red = v_red.reshape(B, Np, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
@@ -117,7 +150,24 @@ class Self_Attention3D(nn.Module):
         v_red = self.norm_v(v_red)
 
         attn = (q @ k_red.transpose(-2, -1)) * self.scale
-        attn = self.attn_drop(attn.softmax(dim=-1))
+        if META_DEBUG_NAN:
+            with torch.no_grad():
+                a32 = attn.float()
+                amax, amin = float(a32.max()), float(a32.min())
+                bad = (not torch.isfinite(a32).all().item()) or amax > 1e3 or amin < -1e3
+                if bad or _meta_debug_should_emit():
+                    qmax = float(q.float().abs().max())
+                    kmax = float(k_red.float().abs().max())
+                    tag = "BAD" if bad else "ok"
+                    print(
+                        f"[meta_dbg] {tag} GLOBAL attn pre-softmax "
+                        f"min={amin:.3g} max={amax:.3g} "
+                        f"|q|max={qmax:.3g} |k|max={kmax:.3g} "
+                        f"Np={k_red.shape[-2]} N={q.shape[-2]}"
+                    )
+        # Force softmax to fp32 — under autocast the inputs are fp16 and softmax
+        # of large attention scores overflows to NaN.
+        attn = self.attn_drop(attn.float().softmax(dim=-1).to(q.dtype))
 
         out = (attn @ v_red).transpose(1, 2).reshape(B, N, C)
         out = self.proj_drop(self.proj(out))
@@ -142,8 +192,8 @@ class ETransformer_block3D(nn.Module):
         mlp_hidden = int(dim * mlp_ratio)
         self.mlp = Mlp(dim, mlp_hidden, out_features=out_features, act_layer=act_layer, drop=drop)
 
-    def forward(self, x, D, H, W):
-        x = x + self.attn(self.norm1(x), D, H, W)
+    def forward(self, x, D, H, W, meta_tokens=None):
+        x = x + self.attn(self.norm1(x), D, H, W, meta_tokens=meta_tokens)
         if self.out_features:
             return self.mlp(self.norm2(x))
         return x + self.mlp(self.norm2(x))
@@ -170,15 +220,48 @@ class Self_Attention_local3D(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, meta_tokens=None):
         B, R, Np, C = x.shape
         qkv = self.qkv(x).reshape(B, R, Np, 3, self.num_heads, C // self.num_heads).permute(3, 0, 1, 4, 2, 5)
         q, k, v = qkv[0], qkv[1], qkv[2]
+        # q, k, v: (B, R, heads, Np, head_dim)
+
+        if meta_tokens is not None:
+            # meta_tokens: (B, M, C). Reuse self.qkv and broadcast across patches so
+            # every local window sees the same metadata K/V. Q from metadata is unused.
+            M_ = meta_tokens.shape[1]
+            m_qkv = self.qkv(meta_tokens) \
+                .reshape(B, M_, 3, self.num_heads, C // self.num_heads) \
+                .permute(2, 0, 3, 1, 4)
+            # m_qkv: (3, B, heads, M, head_dim)
+            m_k, m_v = m_qkv[1], m_qkv[2]
+            # Broadcast to per-patch: (B, R, heads, M, head_dim)
+            m_k = m_k.unsqueeze(1).expand(B, R, -1, -1, -1)
+            m_v = m_v.unsqueeze(1).expand(B, R, -1, -1, -1)
+            k = torch.cat([m_k, k], dim=3)
+            v = torch.cat([m_v, v], dim=3)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = self.attn_drop(attn.softmax(dim=-1))
+        if META_DEBUG_NAN:
+            with torch.no_grad():
+                a32 = attn.float()
+                amax, amin = float(a32.max()), float(a32.min())
+                bad = (not torch.isfinite(a32).all().item()) or amax > 1e3 or amin < -1e3
+                if bad or _meta_debug_should_emit():
+                    qmax = float(q.float().abs().max())
+                    kmax = float(k.float().abs().max())
+                    tag = "BAD" if bad else "ok"
+                    print(
+                        f"[meta_dbg] {tag} LOCAL  attn pre-softmax "
+                        f"min={amin:.3g} max={amax:.3g} "
+                        f"|q|max={qmax:.3g} |k|max={kmax:.3g} "
+                        f"R={q.shape[1]} Np={k.shape[-2]}"
+                    )
+        # fp32 softmax — see Self_Attention3D for rationale.
+        attn = self.attn_drop(attn.float().softmax(dim=-1).to(q.dtype))
 
-        out = (attn @ v).transpose(-1, -2).reshape(B, R, Np, C)
+        # (B, R, heads, Np, head_dim) -> (B, R, Np, heads, head_dim) -> (B, R, Np, C)
+        out = (attn @ v).permute(0, 1, 3, 2, 4).reshape(B, R, Np, C)
         out = self.proj_drop(self.proj(out))
         return out
 
@@ -200,8 +283,8 @@ class ETransformer_block_local3D(nn.Module):
         mlp_hidden = int(dim * mlp_ratio)
         self.mlp = Mlp(dim, mlp_hidden, out_features=out_features, act_layer=act_layer, drop=drop)
 
-    def forward(self, x):
-        x = x + self.attn(self.norm1(x))
+    def forward(self, x, meta_tokens=None):
+        x = x + self.attn(self.norm1(x), meta_tokens=meta_tokens)
         if self.out_features:
             return self.mlp(self.norm2(x))
         return x + self.mlp(self.norm2(x))
@@ -226,10 +309,12 @@ class META3D(nn.Module):
         self.glo_attn = ETransformer_block3D(dim=dim, ratio_d=ratio_d, ratio_h=ratio_h, ratio_w=ratio_w,
                                              num_heads=num_heads, drop=drop, attn_drop=attn_drop)
 
-    def forward(self, x, feature=False):
+    def forward(self, x, meta_tokens=None, feature=False):
         """
         x: (B, C, D, H, W)
         D,H,W must be divisible by pd,ph,pw respectively.
+        meta_tokens: optional (B, M, C) — passed to both global and local branches
+                     so the gate is shaped by the patient/segment metadata.
         """
         b, c, d, h, w = x.shape
         assert d % self.pd == 0 and h % self.ph == 0 and w % self.pw == 0, \
@@ -240,7 +325,7 @@ class META3D(nn.Module):
             x, 'b c (nd pd) (nh ph) (nw pw) -> b (nd nh nw) (pd ph pw) c',
             pd=self.pd, ph=self.ph, pw=self.pw
         )
-        loc_y = self.loc_attn(loc_x)
+        loc_y = self.loc_attn(loc_x, meta_tokens=meta_tokens)
         loc_y = rearrange(
             loc_y, 'b (nd nh nw) (pd ph pw) c -> b c (nd pd) (nh ph) (nw pw)',
             nd=d // self.pd, nh=h // self.ph, nw=w // self.pw,
@@ -249,14 +334,61 @@ class META3D(nn.Module):
 
         # Global: tokens (B, N, C)
         glo_x = x.flatten(2).transpose(1, 2)   # (B, N, C)
-        glo_y = self.glo_attn(glo_x, d, h, w)  # (B, N, C)
+        glo_y = self.glo_attn(glo_x, d, h, w, meta_tokens=meta_tokens)
         glo_y = glo_y.transpose(1, 2).reshape(b, c, d, h, w)
 
-        gate = torch.sigmoid(loc_y + glo_y)
+        gate_logit = loc_y + glo_y
+        gate = torch.sigmoid(gate_logit)
+        if META_DEBUG_NAN:
+            with torch.no_grad():
+                g32 = gate.float()
+                lg32 = gate_logit.float()
+                # "Saturated" gate: indistinguishable from 0 or 1 in fp32.
+                sat = ((g32 < 1e-7) | (g32 > 1 - 1e-7)).float().mean().item()
+                lmax, lmin = float(lg32.max()), float(lg32.min())
+                bad = (not torch.isfinite(lg32).all().item()) or sat > 0.5 or lmax > 30 or lmin < -30
+                if bad or _meta_debug_should_emit():
+                    tag = "BAD" if bad else "ok"
+                    print(
+                        f"[meta_dbg] {tag} GATE   logit min={lmin:.3g} max={lmax:.3g} "
+                        f"saturated_frac={sat:.3f} "
+                        f"shape={tuple(gate.shape)}"
+                    )
         out = x * gate
         if feature:
             return loc_y, glo_y, out
         return out
+
+
+# ============================================================
+# Metadata tokenizer (patient + segment metadata -> transformer tokens)
+# ============================================================
+class MetadataTokenizer(nn.Module):
+    """
+    Maps a metadata feature vector cond ∈ ℝ^F to a small bank of M tokens
+    in the META channel space (B, M, C). The tokens are prepended to K/V
+    inside the META blocks; metadata never scales or shifts feature maps
+    directly (no FiLM γ/β).
+    """
+    def __init__(self, cond_dim: int, n_tokens: int, dim: int, hidden: int = 64):
+        super().__init__()
+        self.n_tokens = n_tokens
+        self.dim = dim
+        self.mlp = nn.Sequential(
+            nn.Linear(cond_dim, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, n_tokens * dim),
+        )
+        # LayerNorm pins the token scale so meta tokens enter attention K/V at the
+        # same statistical scale as the LayerNorm'd feature tokens — without this
+        # the attention scores depend on whatever scale the MLP produces, which
+        # makes softmax unstable.
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, cond: torch.Tensor) -> torch.Tensor:
+        # cond: (B, F) -> (B, M, C)
+        v = self.mlp(cond).reshape(cond.shape[0], self.n_tokens, self.dim)
+        return self.norm(v)
 
 
 # ============================================================
@@ -278,10 +410,9 @@ class Seg_head3D(nn.Module):
 
 # ============================================================
 # Backbone note:
-#   Your code uses a 2D resnet34 returning feat4/8/16/32.
-#   For true 3D volumes, you need a 3D backbone.
-#   Below is a minimal, self-contained 3D backbone that returns
-#   4 scales similar to your resnet outputs.
+#   A 2D resnet34 returns feat4/8/16/32 scales, but true 3D volumes
+#   need a 3D backbone. Below is a minimal, self-contained 3D backbone
+#   that returns 4 scales analogous to those resnet outputs.
 # ============================================================
 class SimpleBackbone3D(nn.Module):
     """
@@ -337,53 +468,125 @@ class SimpleBackbone3D(nn.Module):
 
 
 # ============================================================
-# META-Unet for 3D volumes (same fusion logic, trilinear upsample)
+# META-Unet for 3D volumes — Hunt-3 + metadata -> Hunt-4 regression
 # ============================================================
 class META_Unet3D(nn.Module):
-    def __init__(self, nIn=1, classes=2, p1=(2,4,4), p2=(2,4,4), p3=(2,4,4)):
+    """
+    Multi-scale efficient transformer attention U-Net (paper-faithful) adapted
+    to a 3D regression task. Inputs:
+        x    : (B, in_ch, D, H, W) — Hunt-3 volume
+        cond : (B, F)              — patient + segment metadata vector
+    Output:
+        y_hat: (B, out_ch, D, H, W) — predicted Hunt-4 volume
+
+    Metadata is consumed via MetadataTokenizer -> M tokens in channel space,
+    prepended to the K/V sequences inside both branches of every META block.
+    No FiLM γ/β.
+
+    Runs entirely on `device` (defaults to cuda:0 if available, else cpu).
+    """
+    def __init__(self, in_ch=1, out_ch=1, base=32, cond_dim=3, n_meta_tokens=8,
+                 p1=(2,4,4), p2=(2,4,4), p3=(2,4,4),
+                 r1=(2,2,4), r2=(4,4,4), r3=(4,16,16),
+                 num_heads=4, auto_pad=True, residual=True,
+                 device: torch.device | str | None = None):
         super().__init__()
-        channel = [32, 64, 128, 256, 512]
-        num_heads = 4
+        if device is None:
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device)
+        self.p1, self.p2, self.p3 = p1, p2, p3
+        self.auto_pad = auto_pad
+        self.residual = residual
 
-        self.backbone = SimpleBackbone3D(in_ch=nIn, channels=tuple(channel))
+        channel = [base, base * 2, base * 4, base * 8, base * 16]
 
-        # project all scales to channel[0], like original
-        self.proj4 = CBR3D(nIn=channel[1], nOut=channel[0], kSize=1)
-        self.proj8 = CBR3D(nIn=channel[2], nOut=channel[0], kSize=1)
-        self.proj16 = CBR3D(nIn=channel[3], nOut=channel[0], kSize=1)
-        self.proj32 = CBR3D(nIn=channel[4], nOut=channel[0], kSize=1)
+        self.backbone = SimpleBackbone3D(in_ch=in_ch, channels=tuple(channel)).to(self.device)
 
-        # META blocks (now 3D). Ratios should be feasible at each scale.
-        # You can tune ratio_* to control global token reduction (efficiency).
+        # project all scales to channel[0]
+        self.proj4  = CBR3D(nIn=channel[1], nOut=channel[0], kSize=1).to(self.device)
+        self.proj8  = CBR3D(nIn=channel[2], nOut=channel[0], kSize=1).to(self.device)
+        self.proj16 = CBR3D(nIn=channel[3], nOut=channel[0], kSize=1).to(self.device)
+        self.proj32 = CBR3D(nIn=channel[4], nOut=channel[0], kSize=1).to(self.device)
+
+        # Metadata path (single shared tokenizer, reused by all META blocks).
+        self.tokenizer = MetadataTokenizer(
+            cond_dim=cond_dim, n_tokens=n_meta_tokens, dim=channel[0]
+        ).to(self.device)
+
         self.mstf32_16 = META3D(dim=channel[0], pd=p1[0], ph=p1[1], pw=p1[2],
-                                ratio_d=2, ratio_h=4, ratio_w=4, num_heads=num_heads, drop=0., attn_drop=0.)
-        self.mstf16_8 = META3D(dim=channel[0], pd=p2[0], ph=p2[1], pw=p2[2],
-                               ratio_d=2, ratio_h=4, ratio_w=4, num_heads=num_heads, drop=0., attn_drop=0.)
-        self.mstf8_4 = META3D(dim=channel[0], pd=p3[0], ph=p3[1], pw=p3[2],
-                              ratio_d=2, ratio_h=4, ratio_w=4, num_heads=num_heads, drop=0., attn_drop=0.)
+                                ratio_d=r1[0], ratio_h=r1[1], ratio_w=r1[2],
+                                num_heads=num_heads).to(self.device)
+        self.mstf16_8  = META3D(dim=channel[0], pd=p2[0], ph=p2[1], pw=p2[2],
+                                ratio_d=r2[0], ratio_h=r2[1], ratio_w=r2[2],
+                                num_heads=num_heads).to(self.device)
+        self.mstf8_4   = META3D(dim=channel[0], pd=p3[0], ph=p3[1], pw=p3[2],
+                                ratio_d=r3[0], ratio_h=r3[1], ratio_w=r3[2],
+                                num_heads=num_heads).to(self.device)
 
-        self.seg_head = Seg_head3D(channel[0], classes)
+        self.seg_head = Seg_head3D(channel[0], out_ch).to(self.device)
 
-    def forward(self, x):
-        # backbone features
+        if self.residual:
+            # Small-scale init so delta is small (recon ≈ x at iter 0) but NOT exactly
+            # zero. Exact zero-init makes forward(x) = x for all hyperparams and blocks
+            # gradient flow into the inner network — Optuna can't search through that.
+            nn.init.normal_(self.seg_head.conv2.weight, mean=0.0, std=1e-3)
+            if self.seg_head.conv2.bias is not None:
+                nn.init.zeros_(self.seg_head.conv2.bias)
+
+    def _required_divisor(self):
+        # The local rearrange in each META requires that the resolution at that scale
+        # be divisible by the patch size, hence the input must be divisible by:
+        #   /16 -> 16 * p1
+        #   /8  ->  8 * p2
+        #   /4  ->  4 * p3
+        # Take the per-axis LCM so all three are satisfied with one pad.
+        from math import lcm
+        d = lcm(16 * self.p1[0],  8 * self.p2[0], 4 * self.p3[0])
+        h = lcm(16 * self.p1[1],  8 * self.p2[1], 4 * self.p3[1])
+        w = lcm(16 * self.p1[2],  8 * self.p2[2], 4 * self.p3[2])
+        return d, h, w
+
+    def forward(self, x, cond):
+        x = x.to(self.device)
+        cond = cond.to(self.device)
+
+        # Pad to the smallest shape that satisfies divisibility at every META scale.
+        _, _, D0, H0, W0 = x.shape
+        if self.auto_pad:
+            div_d, div_h, div_w = self._required_divisor()
+            pad_d = (div_d - D0 % div_d) % div_d
+            pad_h = (div_h - H0 % div_h) % div_h
+            pad_w = (div_w - W0 % div_w) % div_w
+            if pad_d or pad_h or pad_w:
+                x = F.pad(x, (0, pad_w, 0, pad_h, 0, pad_d))
+
+        meta_tokens = self.tokenizer(cond)
+
+        # Backbone -> 4 scales.
         feat4, feat8, feat16, feat32 = self.backbone(x)
-
-        # projection to common channel dim
-        feat4 = self.proj4(feat4)
-        feat8 = self.proj8(feat8)
+        feat4  = self.proj4(feat4)
+        feat8  = self.proj8(feat8)
         feat16 = self.proj16(feat16)
         feat32 = self.proj32(feat32)
 
-        # top-down fusion with META refinement (use trilinear)
+        # Top-down fusion with metadata-aware META refinement.
         feat32 = F.interpolate(feat32, scale_factor=2, mode="trilinear", align_corners=True)
-        feat16 = self.mstf32_16(feat16 + feat32)
+        feat16 = self.mstf32_16(feat16 + feat32, meta_tokens=meta_tokens)
 
         feat16 = F.interpolate(feat16, scale_factor=2, mode="trilinear", align_corners=True)
-        feat8 = self.mstf16_8(feat8 + feat16)
+        feat8  = self.mstf16_8(feat8 + feat16, meta_tokens=meta_tokens)
 
         feat8 = F.interpolate(feat8, scale_factor=2, mode="trilinear", align_corners=True)
-        feat4 = self.mstf8_4(feat4 + feat8)
 
-        # segmentation head upsamples x4 overall (2 then 2)
-        out = self.seg_head(feat4)
-        return out
+        feat4 = self.mstf8_4(feat4 + feat8, meta_tokens=meta_tokens)
+
+        delta = self.seg_head(feat4)
+
+        # Crop back to original input shape (auto-pad may have grown D/H/W).
+        delta = delta[:, :, :D0, :H0, :W0]
+
+        if self.residual:
+            # Residual head: predict only the change from Hunt-3 to Hunt-4.
+            # Same contract as ResidualUNet3D: returns (recon, delta).
+            return x[:, :, :D0, :H0, :W0] + delta, delta
+        return delta

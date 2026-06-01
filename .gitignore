@@ -2,6 +2,8 @@
 out/
 data/
 
+results/
+
 # Freesurfer outputs
 fastsurfer/
 my_fastsurfer_analysis

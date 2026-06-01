@@ -55,7 +55,6 @@ class DataConverter():
         return tensor.float()
     
     def tensor_to_numpy(self, tensor: torch.Tensor):
-        # TODO Sjekk at funker
         return tensor.detach().cpu().squeeze().numpy()
     
     # ----- Volume Size Changes -----

@@ -1,0 +1,634 @@
+import fcntl
+import os
+import tempfile
+from contextlib import contextmanager
+from datetime import datetime
+
+import numpy as np
+import optuna
+import torch
+import torch.optim as optim
+import yaml
+
+from utils.metadata.combined_metadata_utils import CombinedMetadataUtils
+from utils.model_utils.grid_search import CROP_AXES, _build_model, _build_scheduler
+from utils.model_utils.loss_functions import ssim_l1_loss
+from utils.model_utils.train_eval import fit_3D, fit_feature_based_3D, get_metadata_features
+from utils.mri.data_converter import DataConverter
+
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+STUDY_NAMES: dict[str, str] = {
+    "film_simple":      "bayes_film_simple",
+    "film_complex":     "bayes_film_complex",
+    "film_simple_res":  "bayes_film_simple_res",
+    "film_complex_res": "bayes_film_complex_res",
+    "std":              "bayes_std",
+    "meta":             "bayes_meta",
+}
+
+FILM_KEYS = ("film_simple", "film_complex", "film_simple_res", "film_complex_res")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _type_key_from_entry(entry: dict) -> str:
+    if entry["model_type"] == "std":
+        return "std"
+    if entry["model_type"] == "meta":
+        return "meta"
+    suffix = "_res" if entry.get("residual", False) else ""
+    return f"film_{entry.get('film_generator_type', 'unknown')}{suffix}"
+
+
+def _suggest_hyperparams(trial: optuna.Trial, model_type_key: str) -> dict:
+    """Suggest hyperparameters for a trial; returns dict compatible with _build_model()."""
+    lr           = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
+    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
+    beta1        = trial.suggest_float("beta1", 0.85, 0.93)
+    beta2        = trial.suggest_float("beta2", 0.95, 0.999)
+    scheduler    = trial.suggest_categorical("scheduler", ["cosine", "plateau"])
+
+    params: dict = dict(
+        learning_rate=lr,
+        weight_decay=weight_decay,
+        beta1=beta1,
+        beta2=beta2,
+        lr_scheduler=scheduler,
+    )
+
+    if model_type_key == "std":
+        params["model_type"] = "std"
+    elif model_type_key == "meta":
+        params["model_type"] = "meta"
+        params["n_meta_tokens"] = trial.suggest_int("n_meta_tokens", 4, 16, log=True)
+        params["num_heads"]     = trial.suggest_categorical("num_heads", [2, 4, 8])
+    else:
+        is_res   = model_type_key.endswith("_res")
+        base_key = model_type_key[: -len("_res")] if is_res else model_type_key
+        gen_type = "simple" if base_key == "film_simple" else "complex"
+        params["model_type"] = "film"
+        params["film_generator_type"] = gen_type
+        params["residual"] = is_res
+        params["mlp_hidden"] = trial.suggest_int("mlp_hidden", 32, 256, log=True)
+
+    return params
+
+
+def _make_trial_id(model_type_key: str, trial_number: int) -> str:
+    return f"{model_type_key}_trial_{trial_number:03d}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# YAML persistence
+# ─────────────────────────────────────────────────────────────────────────────
+
+def init_yaml(
+    yaml_file: str,
+    epochs: int,
+    base_channels: int,
+    restart_threshold: float | None = None,
+    restart_check_epoch: int = 250,
+    max_total_runs: int = 3,
+) -> None:
+    """Create bayes_search.yaml with params header. No-op if already exists."""
+    if os.path.exists(yaml_file):
+        return
+    os.makedirs(os.path.dirname(yaml_file) or ".", exist_ok=True)
+    config = {
+        "params": {
+            "epochs": epochs,
+            "base_channels": base_channels,
+            "restart_threshold": restart_threshold,
+            "restart_check_epoch": restart_check_epoch,
+            "max_total_runs": max_total_runs,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        },
+        "trials": [],
+    }
+    _save_yaml(yaml_file, config)
+    print(f"[bayes_search] Created {yaml_file}")
+
+
+def _load_yaml(yaml_file: str) -> dict:
+    with open(yaml_file) as f:
+        return yaml.safe_load(f) or {"params": {}, "trials": []}
+
+
+def _save_yaml(yaml_file: str, config: dict) -> None:
+    """Atomically write config to yaml_file using a temp file + os.replace."""
+    dir_ = os.path.dirname(yaml_file) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=dir_, suffix=".yaml.tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        os.replace(tmp_path, yaml_file)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+@contextmanager
+def _yaml_file_lock(yaml_file: str):
+    """Cross-process exclusive lock on a sidecar .lock file (fcntl.flock)."""
+    lock_path = yaml_file + ".lock"
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _append_trial_to_yaml(yaml_file: str, entry: dict) -> None:
+    """Atomically append or update a trial entry in the YAML file.
+
+    Holds an exclusive flock on a sidecar lock file across the read-modify-write
+    so concurrent processes (e.g. one per --model_filter) can't lose entries.
+    """
+    with _yaml_file_lock(yaml_file):
+        config = _load_yaml(yaml_file)
+        trials = config.setdefault("trials", [])
+        for i, t in enumerate(trials):
+            if t.get("id") == entry["id"]:
+                trials[i] = entry
+                _save_yaml(yaml_file, config)
+                return
+        trials.append(entry)
+        _save_yaml(yaml_file, config)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core training
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _assert_metadata_coverage(
+    loader: "CombinedMetadataUtils",
+    pairs: list[tuple[str, str]],
+    split_name: str,
+) -> None:
+    """Raise if any x_path's hunt_id is missing from the metadata loader.
+
+    Run as a pre-flight check before training so a coverage gap kills the
+    session in seconds instead of after a multi-hour trial. Once this passes,
+    `get_metadata_features` can fail loudly on a miss without any silent
+    zero-fallback that would otherwise turn off conditioning for a subset of
+    patients.
+    """
+    loader._load()  # ensure _id_to_idx is populated
+    missing: list[str] = []
+    for x_path, _ in pairs:
+        hid = loader._resolve_id(x_path)
+        if hid not in loader._id_to_idx:
+            missing.append(hid)
+    if missing:
+        sample = missing[:5]
+        raise RuntimeError(
+            f"[bayes_search] {split_name}: {len(missing)} of {len(pairs)} "
+            f"patients are missing from metadata CSV — first few: {sample}"
+        )
+    print(f"[bayes_search] {split_name}: {len(pairs)} pairs, all covered")
+
+
+def _eval_on_pairs(
+    model: torch.nn.Module,
+    device: torch.device,
+    pairs: list[tuple[str, str]],
+    combined_loader: "CombinedMetadataUtils | None",
+) -> "float | None":
+    """Average ssim_l1_loss of model (in eval mode) over all pairs. Returns None if pairs is empty."""
+    if not pairs:
+        return None
+
+    data_device = getattr(model, "device", getattr(model, "dev0", device))
+    dc = DataConverter()
+    losses = []
+
+    model.eval()
+    with torch.no_grad():
+        for x_path, y_path in pairs:
+            x = dc.load_path_as_tensor(x_path, data_device)
+            y = dc.load_path_as_tensor(y_path, data_device)
+
+            if CROP_AXES is not None:
+                x = dc.get_volume_with_3d_change(tensor=x, crop_axes=CROP_AXES, remove_mode=True)
+                y = dc.get_volume_with_3d_change(tensor=y, crop_axes=CROP_AXES, remove_mode=True)
+
+            if combined_loader is not None:
+                feat = get_metadata_features(combined_loader, x_path).unsqueeze(0).to(data_device)
+                out = model(x, feat)
+            else:
+                out = model(x)
+
+            y_hat = out[0] if isinstance(out, (tuple, list)) else out
+            crit_out = ssim_l1_loss(y_hat, y)
+            loss = crit_out[0] if isinstance(crit_out, (tuple, list)) else crit_out
+            losses.append(float(loss.item()))
+
+    return float(np.mean(losses)) if losses else None
+
+
+def _run_one_trial(
+    model_type_key: str,
+    hyperparams: dict,
+    trial_id: str,
+    base_channels: int,
+    epochs: int,
+    device: torch.device,
+    train_pairs: list[tuple[str, str]],
+    val_pairs: list[tuple[str, str]],
+    test_pairs: list[tuple[str, str]],
+    checkpoint_every: int,
+    metadata_root: str,
+    out_dir: str,
+    combined_loader: "CombinedMetadataUtils | None",
+    restart_threshold: float | None,
+    restart_check_epoch: int,
+    max_total_runs: int,
+) -> tuple[float, str, "float | None"]:
+    """Build model, train, save checkpoint. Returns (best_val_loss, model_path, best_test_loss)."""
+    lr         = float(hyperparams["learning_rate"])
+    wd         = float(hyperparams["weight_decay"])
+    betas      = (float(hyperparams["beta1"]), float(hyperparams["beta2"]))
+    sched_type = hyperparams["lr_scheduler"]
+
+    if model_type_key == "std":
+        model     = _build_model(hyperparams, base_channels=base_channels, device=device)
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd, betas=betas)
+        scheduler = _build_scheduler(optimizer, sched_type, epochs)
+        _, loss_history, _, best_model, best_val_loss = fit_3D(
+            model=model,
+            device=device,
+            training_pairs=train_pairs,
+            validation_pairs=val_pairs,
+            epochs=epochs,
+            loss_func=ssim_l1_loss,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            crop_axes=CROP_AXES,
+            checkpoint_every=checkpoint_every,
+            restart_threshold=restart_threshold,
+            restart_check_epoch=restart_check_epoch,
+            max_total_runs=max_total_runs,
+        )
+    else:
+        model     = _build_model(hyperparams, base_channels=base_channels,
+                                 cond_dim=combined_loader.n_features, device=device)
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd, betas=betas)
+        scheduler = _build_scheduler(optimizer, sched_type, epochs)
+
+        # Both std (fit_3D) and conditioned models (fit_feature_based_3D) train
+        # in fp32 so the std-vs-FiLM-vs-meta comparison is on equal numerical
+        # footing. Mixing fp32 (std) with autocast/GradScaler (FiLM/meta) used
+        # to systematically handicap the conditioned arm — see EX1 v2 plan.
+        is_meta = model_type_key == "meta"
+        debug_nan = is_meta and os.environ.get("META_DEBUG_NAN", "0") == "1"
+        use_autocast = False
+
+        _, loss_history, _, best_model, best_val_loss = fit_feature_based_3D(
+            model=model,
+            device=device,
+            training_pairs=train_pairs,
+            validation_pairs=val_pairs,
+            epochs=epochs,
+            loss_func=ssim_l1_loss,
+            metadata_loader=combined_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            crop_axes=CROP_AXES,
+            checkpoint_every=checkpoint_every,
+            restart_threshold=restart_threshold,
+            restart_check_epoch=restart_check_epoch,
+            max_total_runs=max_total_runs,
+            debug_nan=debug_nan,
+            use_autocast=use_autocast,
+        )
+
+    model_path = os.path.join(out_dir, f"{trial_id}_({best_val_loss:.4f}).pth")
+    torch.save(best_model.state_dict(), model_path)
+
+    best_test_loss = _eval_on_pairs(best_model, device, test_pairs, combined_loader if model_type_key != "std" else None)
+    return float(best_val_loss), model_path, best_test_loss
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cleanup_incomplete_trials(
+    active_types: list[str],
+    storage: str,
+    yaml_file: str,
+) -> None:
+    """Mark interrupted Optuna trials as FAIL and remove incomplete YAML entries."""
+    cleaned_optuna = 0
+    for type_key in active_types:
+        study_name = STUDY_NAMES[type_key]
+        try:
+            study = optuna.load_study(study_name=study_name, storage=storage)
+        except Exception:
+            continue
+        for frozen in study.trials:
+            if frozen.state == optuna.trial.TrialState.RUNNING:
+                study.tell(frozen.number, state=optuna.trial.TrialState.FAIL)
+                cleaned_optuna += 1
+                print(f"[bayes_search] Marked interrupted trial {frozen.number} in {study_name} as FAIL")
+
+    config = _load_yaml(yaml_file)
+    trials = config.get("trials", [])
+    complete = [t for t in trials if t.get("results", {}).get("completed", False)]
+    removed = len(trials) - len(complete)
+    if removed > 0:
+        config["trials"] = complete
+        _save_yaml(yaml_file, config)
+        print(f"[bayes_search] Removed {removed} incomplete YAML entry(s)")
+
+    if cleaned_optuna or removed:
+        print(f"[bayes_search] Cleanup done — {cleaned_optuna} Optuna trial(s) failed, {removed} YAML entry(s) dropped")
+
+
+def run_bayes(
+    yaml_file: str,
+    db_path: str,
+    device: torch.device,
+    train_pairs: list[tuple[str, str]],
+    val_pairs: list[tuple[str, str]],
+    test_pairs: list[tuple[str, str]] | None = None,
+    n_trials: int = 20,
+    checkpoint_every: int = 250,
+    metadata_root: str = "data/metadata",
+    out_dir: str = "out/bayes_search",
+    model_filter: str | None = None,
+    stop_after_first: bool = False,
+) -> int:
+    """
+    Run up to n_trials Bayesian optimization trials using Optuna TPE.
+
+    One study per model type, backed by a shared SQLite database at db_path.
+    Resumable: calling run_bayes() again continues from where it left off.
+    After each trial, appends results to yaml_file.
+
+    Training config (epochs, base_channels, restart_*) is read from the YAML
+    params section written by init_yaml — there is no duplication.
+
+    Parameters
+    ----------
+    yaml_file        : path to bayes_search.yaml (human-readable audit log)
+    db_path          : path to SQLite file, e.g. "out/bayes_search/bayes_search.db"
+    test_pairs       : held-out pairs evaluated with the best model after each trial
+    n_trials         : total NEW trials to run this session across all active types
+    checkpoint_every : how often (in epochs) to run validation inside each trial
+    model_filter     : None (all types) or one of
+                       'std', 'film_simple', 'film_complex',
+                       'film_simple_res', 'film_complex_res', 'meta'
+    stop_after_first : run exactly one trial then return
+
+    Returns
+    -------
+    int  Number of trials completed in this call.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    # All fixed training config lives in the YAML params written by init_yaml
+    config = _load_yaml(yaml_file)
+    params = config.get("params", {})
+    epochs               = int(params["epochs"])
+    base_channels        = int(params["base_channels"])
+    restart_threshold    = params.get("restart_threshold")
+    restart_check_epoch  = int(params.get("restart_check_epoch", 250))
+    max_total_runs       = int(params.get("max_total_runs", 3))
+
+    if restart_threshold is not None:
+        restart_threshold = float(restart_threshold)
+
+    print(
+        f"[bayes_search] epochs={epochs}  base_channels={base_channels}  "
+        f"restart_threshold={restart_threshold}  restart_check_epoch={restart_check_epoch}  "
+        f"max_total_runs={max_total_runs}"
+    )
+
+    active_types = [k for k in STUDY_NAMES if model_filter is None or k == model_filter]
+    if not active_types:
+        raise ValueError(
+            f"Unknown model_filter: {model_filter!r}. "
+            "Use None, 'std', 'film_simple', 'film_complex', "
+            "'film_simple_res', 'film_complex_res', or 'meta'."
+        )
+
+    # Concurrent multi-GPU invocations write to the same Optuna SQLite DB. Use
+    # a 60s busy timeout (Optuna's documented recommendation for multi-process
+    # SQLite) and switch the DB to WAL journal mode so writers don't block
+    # each other on a single transaction. WAL is persistent: setting it once
+    # on the file sticks across opens; repeating the PRAGMA on every session
+    # is a no-op.
+    import sqlite3 as _sqlite3
+    with _sqlite3.connect(db_path, timeout=60) as _conn:
+        _conn.execute("PRAGMA journal_mode=WAL")
+    storage = f"sqlite:///{db_path}?timeout=60"
+    _cleanup_incomplete_trials(active_types, storage, yaml_file)
+    _combined_loader: CombinedMetadataUtils | None = None
+
+    def _get_loader() -> CombinedMetadataUtils:
+        nonlocal _combined_loader
+        if _combined_loader is None:
+            _combined_loader = CombinedMetadataUtils(
+                csv_path=os.path.join(metadata_root, "metadata_combined.csv")
+            )
+        return _combined_loader
+
+    # Pre-flight: if any conditioned study is in the active set, the loader is
+    # going to be hit for every train/val/test patient. Verify coverage now so
+    # a missing hunt_id raises before any model is built.
+    if any(t != "std" for t in active_types):
+        loader = _get_loader()
+        _assert_metadata_coverage(loader, train_pairs, "train")
+        _assert_metadata_coverage(loader, val_pairs, "val")
+        _assert_metadata_coverage(loader, test_pairs or [], "test")
+
+    completed = 0
+
+    studies: dict[str, optuna.Study] = {
+        mt: optuna.create_study(
+            study_name=STUDY_NAMES[mt],
+            storage=storage,
+            direction="minimize",
+            sampler=optuna.samplers.TPESampler(seed=None),
+            load_if_exists=True,
+        )
+        for mt in active_types
+    }
+
+    for i in range(n_trials):
+        # Round-robin across active model types
+        model_type_key = active_types[i % len(active_types)]
+        study = studies[model_type_key]
+
+        trial = study.ask()
+        hyperparams = _suggest_hyperparams(trial, model_type_key)
+        trial_id = _make_trial_id(model_type_key, trial.number + 1)
+
+        print(f"\n[bayes_search] Starting {trial_id}")
+        if model_type_key in FILM_KEYS:
+            extra_info = (
+                f"  film_type={hyperparams['film_generator_type']}"
+                f"  residual={hyperparams['residual']}"
+                f"  mlp_hidden={hyperparams.get('mlp_hidden')}"
+            )
+        elif model_type_key == "meta":
+            extra_info = (
+                f"  n_meta_tokens={hyperparams['n_meta_tokens']}"
+                f"  num_heads={hyperparams['num_heads']}"
+            )
+        else:
+            extra_info = ""
+        print(
+            f"  lr={hyperparams['learning_rate']:.2e}  wd={hyperparams['weight_decay']:.2e}"
+            f"  beta1={hyperparams['beta1']:.3f}  beta2={hyperparams['beta2']:.3f}"
+            f"  sched={hyperparams['lr_scheduler']}{extra_info}"
+        )
+
+        entry: dict = {
+            "id": trial_id,
+            "optuna_trial_number": trial.number + 1,
+            "study_name": STUDY_NAMES[model_type_key],
+            "model_type": hyperparams["model_type"],
+            "learning_rate": hyperparams["learning_rate"],
+            "weight_decay": hyperparams["weight_decay"],
+            "beta1": hyperparams["beta1"],
+            "beta2": hyperparams["beta2"],
+            "lr_scheduler": hyperparams["lr_scheduler"],
+        }
+        if model_type_key in FILM_KEYS:
+            entry["film_generator_type"] = hyperparams["film_generator_type"]
+            entry["mlp_hidden"] = hyperparams["mlp_hidden"]
+            entry["residual"] = hyperparams["residual"]
+        elif model_type_key == "meta":
+            entry["n_meta_tokens"] = hyperparams["n_meta_tokens"]
+            entry["num_heads"]     = hyperparams["num_heads"]
+
+        try:
+            loader = None if model_type_key == "std" else _get_loader()
+            best_val_loss, model_path, best_test_loss = _run_one_trial(
+                model_type_key=model_type_key,
+                hyperparams=hyperparams,
+                trial_id=trial_id,
+                base_channels=base_channels,
+                epochs=epochs,
+                device=device,
+                train_pairs=train_pairs,
+                val_pairs=val_pairs,
+                test_pairs=test_pairs or [],
+                checkpoint_every=checkpoint_every,
+                metadata_root=metadata_root,
+                out_dir=out_dir,
+                combined_loader=loader,
+                restart_threshold=restart_threshold,
+                restart_check_epoch=restart_check_epoch,
+                max_total_runs=max_total_runs,
+            )
+            study.tell(trial, best_val_loss)
+            entry["results"] = {
+                "best_val_loss": best_val_loss,
+                "best_test_loss": best_test_loss,
+                "completed": True,
+                "trained_at": datetime.now().isoformat(timespec="seconds"),
+                "model_path": model_path,
+            }
+            test_info = f"  best_test_loss={best_test_loss:.6f}" if best_test_loss is not None else ""
+            print(f"[bayes_search] Done {trial_id}  best_val_loss={best_val_loss:.6f}{test_info}  → {model_path}")
+
+        except Exception as e:
+            study.tell(trial, state=optuna.trial.TrialState.FAIL)
+            entry["results"] = {"completed": False, "error": str(e)}
+            print(f"[bayes_search] FAILED {trial_id}: {e}")
+
+        _append_trial_to_yaml(yaml_file, entry)
+        completed += 1
+
+        if stop_after_first:
+            break
+
+    print(f"\n[bayes_search] Session complete. Ran {completed} trial(s).")
+    return completed
+
+
+def get_bayes_champion_entries(yaml_file: str) -> dict[str, dict]:
+    """
+    Return the best completed trial entry per model type from bayes_search.yaml.
+
+    Returns
+    -------
+    dict mapping type key ('std', 'film_simple', 'film_complex',
+    'film_simple_res', 'film_complex_res', 'meta') -> entry dict
+    """
+    config = _load_yaml(yaml_file)
+    best: dict[str, dict] = {}
+    for entry in config.get("trials", []):
+        results = entry.get("results", {})
+        if not results.get("completed", False):
+            continue
+        key = _type_key_from_entry(entry)
+        val_loss = float(results["best_val_loss"])
+        if key not in best or val_loss < float(best[key]["results"]["best_val_loss"]):
+            best[key] = entry
+    return best
+
+
+def select_bayes_champions(
+    yaml_file: str = "out/bayes_search/bayes_search.yaml",
+    device: torch.device = "cuda:0",
+    metadata_root: str = "data/metadata",
+    ignored_models: list[str] = ["film_complex"],
+) -> dict[str, torch.nn.Module]:
+    """
+    Load and return the best-performing model per type in eval mode.
+
+    Rebuilds architecture from YAML entry, loads .pth weights from model_path.
+    Mirrors grid_search.select_champions() exactly.
+
+    Returns
+    -------
+    dict mapping type key -> model (eval mode, on device)
+    """
+    config = _load_yaml(yaml_file)
+    base_channels = int(config.get("params", {}).get("base_channels", 32))
+
+    best = get_bayes_champion_entries(yaml_file)
+    if not best:
+        print("[select_bayes_champions] No completed trials found.")
+        return {}
+
+    _combined_loader: CombinedMetadataUtils | None = None
+    champions: dict[str, torch.nn.Module] = {}
+
+    for key, entry in best.items():
+        if key in ignored_models:
+            print(f"[select_bayes_champions] Skipping {key} (ignored)")
+            continue
+        model_path = entry["results"]["model_path"]
+        if entry["model_type"] in ("film", "meta"):
+            if _combined_loader is None:
+                _combined_loader = CombinedMetadataUtils(
+                    csv_path=os.path.join(metadata_root, "metadata_combined.csv")
+                )
+            model = _build_model(entry, base_channels=base_channels,
+                                 cond_dim=_combined_loader.n_features, device=device)
+        else:
+            model = _build_model(entry, base_channels=base_channels, device=device)
+
+        model.load_state_dict(torch.load(model_path, map_location="cpu"))
+        model.eval()
+        champions[key] = model
+        print(
+            f"[select_bayes_champions] {key}: {entry['id']}"
+            f"  val_loss={entry['results']['best_val_loss']:.6f}  ← {model_path}"
+        )
+
+    return champions
