@@ -11,7 +11,6 @@ scripts used in the thesis.
 Four 3D U-Net variants live in [models/](models/):
 
 - `unet_3d_std` — baseline 3D U-Net.
-- `unet_3d_res` — residual variant that predicts the HUNT3→HUNT4 delta.
 - `unet_3d_film` — FiLM-conditioned U-Net that modulates features on metadata.
 - `unet_3d_meta` — metadata-conditioned variant.
 
