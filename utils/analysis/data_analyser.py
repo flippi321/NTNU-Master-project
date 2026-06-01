@@ -7,10 +7,10 @@ from skimage.metrics import structural_similarity
 from tqdm import tqdm
 
 class DataAnalyser():
-    """
-    Heads up, this file is messy, hardcoded and not really optimized.
+    """Exploratory analysis helpers for the HUNT3/HUNT4 datasets.
 
-    Should work fine tho :P
+    Utilities for inspecting volumes and computing per-axis crop bounds.
+    Some paths and parameters are dataset-specific.
     """
     
     def __init__(self, root_path: str = 'NTNU-Master-project/data'):
@@ -140,8 +140,8 @@ class DataAnalyser():
 # -----------------------------------------------------
 def hunt_per_face_possible_crop(hunt_vol: np.ndarray, eps: float = 1e-6):
     """
-    For every dimention/axis, we see how much we can crop before we hit the brain
-    This is done both directions per axis, as the padding isn't symetrical (we use Start and End)
+    For every dimension/axis, we see how much we can crop before we hit the brain
+    This is done both directions per axis, as the padding isn't symmetrical (we use Start and End)
 
     Returns:
       mins: (x0, y0, z0) inclusive
@@ -262,7 +262,7 @@ def recommended_safe_symmetric_crop(hunt_shape: np.array, caps: np.array, rec_di
 
         # Final sanity
         if s > s_cap or e > e_cap or s + e != d:
-            raise RuntimeError(f"The cropping algorithm is burning :/ \n{s} should be <= {s_cap}, {e} should be <= {e_cap}, and {s}+{e}={d}")
+            raise RuntimeError(f"Cropping bounds are inconsistent:\n{s} should be <= {s_cap}, {e} should be <= {e_cap}, and {s}+{e}={d}")
 
         start[ax] = s
         end[ax]   = e

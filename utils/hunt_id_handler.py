@@ -3,8 +3,8 @@ hunt_id_handler.py
 
 Centralised mapping between HUNT ID formats. Three IDs are tracked:
 
-- ``short`` — NT4MRI 5-char ID (e.g. ``"10035"``). The canonical ID.
-- ``long``  — PID115827 13-digit ID (e.g. ``1158270000479``). Used for
+- ``short`` — NT4MRI 5-char ID (e.g. ``"12345"``). The canonical ID.
+- ``long``  — PID115827 13-digit ID (e.g. ``1158270000000``). Used for
   questionnaire / health data.
 - ``old``   — Long HUNT3 13-digit ID (e.g. ``9410000000000``). Deprecated;
   scheduled for removal but still appears in some legacy files.

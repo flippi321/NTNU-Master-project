@@ -410,10 +410,9 @@ class Seg_head3D(nn.Module):
 
 # ============================================================
 # Backbone note:
-#   Your code uses a 2D resnet34 returning feat4/8/16/32.
-#   For true 3D volumes, you need a 3D backbone.
-#   Below is a minimal, self-contained 3D backbone that returns
-#   4 scales similar to your resnet outputs.
+#   A 2D resnet34 returns feat4/8/16/32 scales, but true 3D volumes
+#   need a 3D backbone. Below is a minimal, self-contained 3D backbone
+#   that returns 4 scales analogous to those resnet outputs.
 # ============================================================
 class SimpleBackbone3D(nn.Module):
     """

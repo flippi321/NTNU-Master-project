@@ -1,4 +1,8 @@
-# Kjøre Bruker 4 i fastsurfer mappa
+#!/usr/bin/env bash
+# Reference FastSurfer / Singularity commands used to produce the FastSurfer
+# segmentations for this project. Adjust the bind paths and IDs to your setup.
+
+# Run a single subject through FastSurfer.
 singularity exec --nv -e \
   -B $HOME/NTNU-Master-project/fastsurfer/my_mri_data:/data \
   -B $HOME/NTNU-Master-project/fastsurfer/my_fastsurfer_analysis:/analysis \
@@ -13,9 +17,9 @@ singularity exec --nv -e \
     --threads 4
 
 
-# ---------- PLAN B ----------
+# ---------- Batch variant ----------
 
-# Lag subject_list.txt med alle brukere med id over X
+# Build subject_list.txt with every subject whose id is greater than X.
 BASE="/cluster/projects/vc/data/mic/closed/MRI_HUNT/images/images_3D_preprocessed/HUNT3"
 
 find "$BASE" -type f \
@@ -32,7 +36,7 @@ find "$BASE" -type f \
 head -n 3 subjects_list.txt
 wc -l subjects_list.txt
 
-# Kjøre alle spesifiserte brukere i subject_list
+# Run every subject listed in subject_list.txt.
 singularity exec --nv \
   --no-home \
   -B /cluster/projects/vc/data/mic/closed/MRI_HUNT/images/images_3D_preprocessed/HUNT3:/data:ro \

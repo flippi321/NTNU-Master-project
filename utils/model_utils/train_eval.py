@@ -143,7 +143,7 @@ def fit_3D(
 
             # Make sure they have the same depth
             if (x.shape[2] != y.shape[2]) or (x.shape[3] != y.shape[3]) or (x.shape[4] != y.shape[4]):
-                print(f"Warning: unequal dimentions in training pair for patient {patient_id} (D: {x.shape[2]} vs {y.shape[2]}, H: {x.shape[3]} vs {y.shape[3]}, W: {x.shape[4]} vs {y.shape[4]}). Skipped pair...")
+                print(f"Warning: unequal dimensions in training pair for patient {patient_id} (D: {x.shape[2]} vs {y.shape[2]}, H: {x.shape[3]} vs {y.shape[3]}, W: {x.shape[4]} vs {y.shape[4]}). Skipped pair...")
                 continue
 
             out = model(x)
@@ -161,7 +161,7 @@ def fit_3D(
             # --- compute loss ---
             crit_out = loss_func(y_hat, y)
 
-            # TODO Sjekk hvem av disse som er tilfelle ved ssim
+            # Some loss functions return (loss, components); keep the scalar loss.
             loss = crit_out[0] if isinstance(crit_out, (tuple, list)) else crit_out
             capped_loss = cap_logged_loss(loss)
 
@@ -350,7 +350,7 @@ def fit_feature_based_3D(
 
             # Make sure they have the same depth
             if (x.shape[2] != y.shape[2]) or (x.shape[3] != y.shape[3]) or (x.shape[4] != y.shape[4]):
-                print(f"Warning: unequal dimentions in training pair for patient {patient_id} (D: {x.shape[2]} vs {y.shape[2]}, H: {x.shape[3]} vs {y.shape[3]}, W: {x.shape[4]} vs {y.shape[4]}). Skipped pair...")
+                print(f"Warning: unequal dimensions in training pair for patient {patient_id} (D: {x.shape[2]} vs {y.shape[2]}, H: {x.shape[3]} vs {y.shape[3]}, W: {x.shape[4]} vs {y.shape[4]}). Skipped pair...")
                 continue
 
             cond = get_metadata_features(metadata_loader, x_path).unsqueeze(0).to(data_device)
@@ -373,7 +373,7 @@ def fit_feature_based_3D(
                 # --- compute loss ---
                 crit_out = loss_func(y_hat, y)
 
-                # TODO Sjekk hvem av disse som er tilfelle ved ssim
+                # Some loss functions return (loss, components); keep the scalar loss.
                 loss = crit_out[0] if isinstance(crit_out, (tuple, list)) else crit_out
 
             # --- NaN diagnostic: check forward output and loss ---
